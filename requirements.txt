@@ -1,0 +1,10 @@
+fastapi==0.115.0
+uvicorn==0.30.6
+python-multipart==0.0.9
+faster-whisper==1.0.3
+ctranslate2==4.4.0
+simple-diarizer==0.2.0
+pydub==0.25.1
+sqlalchemy==2.0.35
+requests
+ollama

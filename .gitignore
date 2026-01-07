@@ -1,0 +1,10 @@
+data/
+backend/__pycache__/
+venv/
+.env
+.vscode/
+*.wav
+*.mp3
+*.m4a
+*.pyc
+ffmpeg-tools/
