@@ -1,10 +1,23 @@
+# Session AI - Requirements
+# Python 3.9+ required
+
+# Web Framework
 fastapi==0.115.0
 uvicorn==0.30.6
-python-multipart==0.0.9
-faster-whisper==1.0.3
-ctranslate2==4.4.0
-simple-diarizer==0.2.0
-pydub==0.25.1
-sqlalchemy==2.0.35
-requests
-ollama
+python-multipart==0.0.21
+
+# Database
+sqlalchemy==2.0.45
+
+# AI & Audio Processing
+faster-whisper==1.2.1
+ctranslate2==4.6.3
+ollama==0.6.1
+
+# Security & Encryption
+cryptography==46.0.3
+passlib[bcrypt]==1.7.4
+bcrypt==5.0.0
+
+# HTTP Client
+requests==2.32.0

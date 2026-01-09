@@ -14,11 +14,30 @@ if not os.path.exists(DATA_DIR):
 SQLALCHEMY_DATABASE_URL = f"sqlite:///{os.path.join(DATA_DIR, 'psyco_app.db')}"
 
 engine = create_engine(
-    SQLALCHEMY_DATABASE_URL, connect_args={"check_same_thread": False}
+    SQLALCHEMY_DATABASE_URL, 
+    connect_args={"check_same_thread": False, "timeout": 30}
 )
+
+# Enable WAL mode for better concurrency
+from sqlalchemy import event
+@event.listens_for(engine, "connect")
+def set_sqlite_pragma(dbapi_connection, connection_record):
+    cursor = dbapi_connection.cursor()
+    cursor.execute("PRAGMA journal_mode=WAL")
+    cursor.execute("PRAGMA synchronous=NORMAL")
+    cursor.close()
+
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
 Base = declarative_base()
+
+class User(Base):
+    __tablename__ = "users"
+    id = Column(Integer, primary_key=True, index=True)
+    username = Column(String, unique=True, index=True)
+    hashed_password = Column(String)
+    salt = Column(String) # For key derivation
+    created_at = Column(DateTime, default=datetime.datetime.now)
 
 class Patient(Base):
     __tablename__ = "patients"

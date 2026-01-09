@@ -1,10 +1,73 @@
-data/
-backend/__pycache__/
+# Entornos virtuales de Python
 venv/
-.env
-.vscode/
+env/
+ENV/
+.venv
+
+# Archivos de Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+
+# Base de datos y datos sensibles
+data/
+*.db
+*.db-shm
+*.db-wal
+db_content.txt
+
+# Archivos de audio (pueden contener información sensible)
 *.wav
 *.mp3
 *.m4a
-*.pyc
+*.ogg
+*.flac
+*.enc
+
+# Archivos de configuración sensibles
+.env
+.env.local
+*.key
+*.pem
+
+# IDEs y editores
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Logs
+*.log
+logs/
+
+# Herramientas de sistema (muy pesadas para Git)
 ffmpeg-tools/
+
+# Archivos temporales
+*.tmp
+*.temp
+temp/
+tmp/
+
+# Archivos de sistema Windows
+Thumbs.db
+desktop.ini
+
+# Archivos de sistema macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Backups
+*.bak
+*.backup
+backup/
+
+# Archivos de distribución
+dist/
+build/
+*.egg-info/

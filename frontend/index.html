@@ -4,7 +4,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>ScribeClínico AI | Gestión Psicoterapéutica</title>
+    <title>Session AI | Gestión Psicoterapéutica</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;600&display=swap" rel="stylesheet">
     <style>
@@ -102,27 +102,68 @@
 
 <body class="text-slate-200">
 
+    <!-- Auth Modal (Registration/Login) -->
+    <div id="login-modal"
+        class="fixed inset-0 bg-slate-950/95 backdrop-blur-2xl z-[100] flex items-center justify-center p-4">
+        <div
+            class="custom-card w-full max-w-sm p-10 space-y-8 animate-in zoom-in-95 duration-300 border-indigo-500/20 shadow-2xl">
+            <div class="text-center space-y-3">
+                <div
+                    class="bg-indigo-600 w-16 h-16 rounded-2xl flex items-center justify-center mx-auto shadow-lg shadow-indigo-500/30">
+                    <svg class="w-8 h-8 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                            d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z">
+                        </path>
+                    </svg>
+                </div>
+                <h2 id="login-title" class="text-2xl font-bold text-white tracking-tight">Acceso Profesional</h2>
+                <p id="login-subtitle" class="text-slate-400 text-sm">Session AI - Ingresa tus credenciales</p>
+            </div>
+            <div class="space-y-4">
+                <div>
+                    <label class="text-[10px] font-bold text-slate-500 uppercase ml-1">Usuario</label>
+                    <input type="text" id="login-username" class="w-full p-3 rounded-xl mt-1 text-sm"
+                        placeholder="Psicólogo">
+                </div>
+                <div>
+                    <label class="text-[10px] font-bold text-slate-500 uppercase ml-1">Contraseña</label>
+                    <input type="password" id="login-password" class="w-full p-3 rounded-xl mt-1 text-sm"
+                        placeholder="••••••••">
+                </div>
+                <button id="login-btn" onclick="handleAuthAction()"
+                    class="w-full bg-indigo-600 hover:bg-indigo-700 text-white font-bold py-3.5 rounded-xl transition-all shadow-lg shadow-indigo-500/20 active:scale-95">CONTINUAR</button>
+            </div>
+            <p id="login-error"
+                class="text-rose-400 text-[10px] text-center font-bold hidden uppercase tracking-widest">Error al
+                iniciar sesión</p>
+        </div>
+    </div>
+
     <!-- Navbar -->
     <header
         class="h-16 border-b border-border flex items-center justify-between px-8 bg-slate-900/50 backdrop-blur-md z-10">
-        <div class="flex items-center gap-3">
+        <div class="flex items-center gap-3 cursor-pointer" onclick="goToHome()">
             <div class="bg-indigo-600 p-2 rounded-lg">
                 <svg class="w-5 h-5 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
-                        d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z">
+                        d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z">
                     </path>
                 </svg>
             </div>
             <h1 class="text-xl font-bold tracking-tight">
-                ScribeClínico <span class="text-indigo-400 font-light">AI</span>
+                Session <span class="text-indigo-400 font-light">AI</span>
             </h1>
         </div>
 
         <div class="flex items-center gap-4">
-            <button onclick="checkServerStatus()"
-                class="btn-status flex items-center gap-2 bg-slate-800 hover:bg-slate-700 px-4 py-1.5 rounded-full border border-border text-xs font-semibold">
+            <div
+                class="flex items-center gap-2 bg-slate-800/50 px-4 py-1.5 rounded-full border border-border text-xs font-semibold select-none">
                 <span id="status-dot" class="w-2 h-2 rounded-full bg-slate-500"></span>
-                <span id="status-text text-slate-400">Verificando...</span>
+                <span id="status-text">Verificando...</span>
+            </div>
+            <button onclick="handleLogout()" id="logout-btn"
+                class="hidden text-slate-500 hover:text-rose-400 text-xs font-bold transition-colors">
+                Cerrar Sesión
             </button>
         </div>
     </header>
@@ -168,7 +209,7 @@
                     </svg>
                 </div>
                 <div class="text-center space-y-2">
-                    <h2 class="text-2xl font-bold text-slate-100 italic">Bienvenido a ScribeClínico</h2>
+                    <h2 class="text-2xl font-bold text-slate-100 italic">Bienvenido a Session AI</h2>
                     <p class="text-slate-500 max-w-sm">Selecciona un paciente de la izquierda para ver sus sesiones o
                         crear una nueva intervención con IA.</p>
                 </div>
@@ -272,7 +313,7 @@
     <footer
         class="h-8 border-t border-border flex items-center justify-between px-8 bg-slate-900/80 backdrop-blur-md text-[10px] text-slate-500 shrink-0 z-20">
         <div class="flex items-center gap-4">
-            <span>&copy; 2026 ScribeClínico AI. Todos los derechos reservados.</span>
+            <span>&copy; 2026 Session AI. Todos los derechos reservados.</span>
             <span class="w-1 h-1 rounded-full bg-slate-700"></span>
             <span class="italic">Privacidad y Ética Profesional Garantizada</span>
         </div>
@@ -342,6 +383,18 @@
                             class="hidden text-[10px] bg-indigo-900/50 border border-indigo-700 px-2 py-0.5 rounded-full text-indigo-300 font-mono"></span>
                     </div>
                     <span id="session-date-display" class="text-xs text-slate-500 mt-1">Fecha: --/--/----</span>
+                    <div id="audio-container"
+                        class="mt-4 flex items-center gap-4 bg-slate-950/30 p-2 rounded-xl border border-indigo-500/10">
+                        <button id="play-btn"
+                            class="bg-indigo-600 hover:bg-indigo-700 p-2 rounded-lg transition-all active:scale-90">
+                            <svg class="w-4 h-4 text-white" fill="currentColor" viewBox="0 0 24 24">
+                                <path d="M8 5v14l11-7z" />
+                            </svg>
+                        </button>
+                        <audio id="modal-audio-player" class="h-8 filter invert opacity-60"></audio>
+                        <span class="text-[9px] font-bold text-indigo-500/60 uppercase tracking-widest">Canal
+                            Cifrado</span>
+                    </div>
                 </div>
                 <button onclick="closeModal()"
                     class="w-8 h-8 rounded-full flex items-center justify-center text-slate-400 hover:bg-slate-800 hover:text-white transition-all">✕</button>
