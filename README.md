@@ -25,18 +25,17 @@ Session AI implementa múltiples capas de seguridad:
 
 ```
 psyco-app/
+├── assets/               # Recursos globales (Branding, Iconos)
 ├── backend/              # Servidor API (FastAPI)
 │   ├── main.py          # Punto de entrada y rutas
-│   ├── database.py      # Modelos y configuración de BD
 │   ├── processor.py     # Motor de IA y procesamiento
-│   └── security.py      # Funciones de cifrado
-├── frontend/            # Interfaz de usuario
-│   ├── index.html       # Aplicación principal
-│   └── app.js           # Lógica del cliente
-├── data/                # ⚠️ DATOS SENSIBLES (no incluir en Git)
-│   ├── psyco_app.db     # Base de datos SQLite
-│   └── uploads/         # Audios cifrados
-├── ffmpeg-tools/        # Herramientas de procesamiento de audio
+│   └── ...
+├── frontend/            # Interfaz de usuario (HTML/JS/CSS)
+│   ├── assets/          # Imágenes y recursos del cliente
+│   └── ...
+├── data/                # ⚠️ DATOS SENSIBLES (Excluido de Git)
+├── ffmpeg-tools/        # Binarios de procesamiento de audio
+├── Session_AI.bat       # Lanzador automático profesional
 └── requirements.txt     # Dependencias de Python
 ```
 
@@ -73,7 +72,13 @@ psyco-app/
    pip install -r requirements.txt
    ```
 
-### 3. Ejecución
+### 3. Ejecución (Recomendada)
+
+Simplemente haz doble clic en el archivo **`Session_AI.bat`** en la raíz del proyecto. Este script automatiza la configuración del entorno, la instalación de dependencias y lanza la aplicación con un icono oficial en tu escritorio.
+
+---
+
+### 4. Ejecución (Manual para Desarrolladores)
 
 1. **Iniciar el servidor:**
    ```powershell
@@ -83,8 +88,8 @@ psyco-app/
    El servidor estará disponible en `http://127.0.0.1:8000`
 
 2. **Abrir la aplicación:**
-   - Abre `frontend/index.html` en tu navegador
-   - En el primer uso, crea tu usuario y contraseña maestra
+   - Abre `frontend/index.html` en tu navegador.
+   - En el primer uso, crea tu usuario y contraseña maestra.
    - ⚠️ **Importante:** Guarda tu contraseña en un lugar seguro. Sin ella, no podrás acceder a los datos cifrados.
 
 ## 🧠 Flujo de Trabajo
@@ -162,8 +167,12 @@ ollama list
 - El modo WAL está activado automáticamente
 - Si persiste, cierra todas las instancias del servidor
 
-## 📄 Licencia
+## 🗺️ Hoja de Ruta (Roadmap)
+- [ ] **Migración a Electron:** Convertir la aplicación web en una App de Escritorio nativa para mayor estabilidad.
+- [ ] **Notificaciones Nativas:** Alertas de Windows al finalizar el procesamiento.
+- [ ] **Modo Multilingüe:** Soporte para transcripción en más idiomas.
 
+## 📄 Licencia
 Este proyecto es de código privado. Todos los derechos reservados.
 
 ## 👨‍💻 Desarrollado por

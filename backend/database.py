@@ -5,13 +5,18 @@ from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker, relationship
 
 # Base directory (root of the project)
-BASE_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+# Usamos un método más robusto para encontrar la raíz real del proyecto
+current_file_path = os.path.abspath(__file__)
+backend_dir = os.path.dirname(current_file_path)
+BASE_DIR = os.path.dirname(backend_dir)
 DATA_DIR = os.path.join(BASE_DIR, "data")
+DB_PATH = os.path.join(DATA_DIR, 'psyco_app.db')
 
 if not os.path.exists(DATA_DIR):
-    os.makedirs(DATA_DIR)
+    os.makedirs(DATA_DIR, exist_ok=True)
 
-SQLALCHEMY_DATABASE_URL = f"sqlite:///{os.path.join(DATA_DIR, 'psyco_app.db')}"
+# En Windows, formateamos la ruta para que SQLite no se confunda
+SQLALCHEMY_DATABASE_URL = f"sqlite:///{DB_PATH.replace(os.sep, '/')}"
 
 engine = create_engine(
     SQLALCHEMY_DATABASE_URL, 

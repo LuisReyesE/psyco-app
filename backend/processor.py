@@ -33,18 +33,12 @@ class AudioProcessorManager:
         self.is_running = False
         self._initialized = True
         
-        # Hardware detection
-        cuda_available = False
-        try:
-            cuda_available = ctranslate2.get_cuda_device_count() > 0
-        except:
-            pass
-            
-        self.device = "cuda" if cuda_available else "cpu"
-        self.compute_type = "float16" if self.device == "cuda" else "int8"
+        # Forzamos CPU para optimización de recursos según requerimiento
+        self.device = "cpu"
+        self.compute_type = "int8"
         
-        print(f"--- AudioProcessorManager Initialized ---")
-        print(f"Detection: {'GPU (CUDA)' if self.device == 'cuda' else 'CPU'}")
+        print(f"--- AudioProcessorManager Initialized (Modo Optimizado CPU) ---")
+        print(f"Device: {self.device} | Compute: {self.compute_type}")
 
     def load_model(self):
         """Loads the whisper model into memory"""
@@ -96,18 +90,34 @@ class AudioProcessorManager:
                 print(f"Worker loop error: {str(e)}")
                 time.sleep(2)
 
-    def _compress_audio(self, input_path):
-        """Compresses audio to m4a using FFmpeg"""
-        output_path = input_path.rsplit('.', 1)[0] + ".m4a"
-        print(f"Compressing {input_path} to {output_path}...")
+    def _preprocess_audio(self, input_path):
+        """
+        Lógica de Pre-procesamiento con FFmpeg:
+        - Si es opus/ogg: No realiza conversión (Zero-copy).
+        - Si es otro formato: Convierte a opus optimizado para voz (16kHz, mono, 12k).
+        """
+        ext = input_path.rsplit('.', 1)[-1].lower()
+        
+        # Caso 1: Ya es compatible nativamente (WhatsApp / Grabación Nativa)
+        if ext in ['opus', 'ogg']:
+            print(f"Optimización: Formato {ext} detectado, usando Zero-copy.")
+            return input_path
+            
+        # Caso 2: Otros formatos (.mp3, .mp4, .wav, .webm)
+        output_path = input_path.rsplit('.', 1)[0] + "_opt.opus"
+        print(f"Convirtiendo {input_path} a formato optimizado .opus...")
         try:
-            # -y overwrite, -i input, -c:a aac codec, -b:a 64k bitrate (enough for voice)
-            subprocess.run(['ffmpeg', '-y', '-i', input_path, '-c:a', 'aac', '-b:a', '64k', output_path], 
-                           check=True, capture_output=True)
+            # Comando optimizado: ffmpeg -i entrada -vn -c:a libopus -ar 16000 -ac 1 -b:a 12k salida.opus
+            subprocess.run([
+                'ffmpeg', '-y', '-i', input_path, 
+                '-vn', '-c:a', 'libopus', 
+                '-ar', '16000', '-ac', '1', 
+                '-b:a', '12k', output_path
+            ], check=True, capture_output=True)
             return output_path
         except Exception as e:
-            print(f"Compression error: {e}")
-            return None
+            print(f"Error en pre-procesamiento FFmpeg: {e}")
+            return input_path # Fallback al original si falla la conversión
 
     def _process_single_task(self, session_id: int, selected_model: str = None, encryption_key: bytes = None):
         """Main processing logic for a single session"""
@@ -120,15 +130,27 @@ class AudioProcessorManager:
             if self.model is None:
                 self.load_model()
 
-            # 1. TRANSCRIPTION PHASE
+            # 1. PRE-PROCESSING PHASE
+            print(f"--- [Session {session_id}] Phase: Pre-processing ---")
+            original_audio_path = session_record.audio_path
+            audio_path = self._preprocess_audio(original_audio_path)
+            
+            # 2. TRANSCRIPTION PHASE
             print(f"--- [Session {session_id}] Phase: Transcribing ---")
             session_record.status = "transcribing"
             db.commit()
 
-            audio_path = session_record.audio_path
             start_transcribe = time.time()
             
-            segments, info = self.model.transcribe(audio_path, beam_size=5)
+            # Parámetros de Inferencia Optimizados:
+            # beam_size=1 (Modo búsqueda rápida)
+            # vad_filter=True (Detección de voz para ignorar silencios)
+            segments, info = self.model.transcribe(
+                audio_path, 
+                beam_size=1, 
+                vad_filter=True,
+                vad_parameters=dict(min_silence_duration_ms=500)
+            )
             
             transcript_text = ""
             for segment in segments:
@@ -185,35 +207,34 @@ class AudioProcessorManager:
             except Exception as e:
                 final_json = {"error": f"Ollama Error: {str(e)}"}
 
-            # 3. ENCRYPTION & COMPRESSION PHASE
+            # 3. ENCRYPTION & CLEANUP PHASE
             print(f"--- [Session {session_id}] Phase: Securing ---")
             session_record.status = "securing"
             db.commit()
 
             if encryption_key:
-                # Encrypt text data
+                # Cifrar datos de texto
                 session_record.transcription_raw = encrypt_data(transcript_text, encryption_key)
                 session_record.structured_json = {"_encrypted": encrypt_data(json.dumps(final_json), encryption_key)}
                 
-                # Compress and then encrypt audio
-                m4a_path = self._compress_audio(audio_path)
-                if m4a_path:
-                    enc_path = encrypt_file(m4a_path, encryption_key)
-                    session_record.audio_path = enc_path
-                    # Delete original wav if still exists
-                    if os.path.exists(audio_path):
-                        os.remove(audio_path)
-                else:
-                    # If compression fails, encrypt original wav as fallback
-                    enc_path = encrypt_file(audio_path, encryption_key)
-                    session_record.audio_path = enc_path
+                # Cifrar el archivo de audio (el que usamos para transcribir, que ya es Opus)
+                enc_path = encrypt_file(audio_path, encryption_key)
+                session_record.audio_path = enc_path
+
+                # LIMPIEZA RIGUROSA:
+                # 1. Eliminar el archivo original subido (si es distinto al de audio_path)
+                if original_audio_path != audio_path and os.path.exists(original_audio_path):
+                    os.remove(original_audio_path)
+                
+                # 2. Eliminar el archivo que se cifró (ya quedó guardado como .enc)
+                if os.path.exists(audio_path):
+                    os.remove(audio_path)
             else:
-                # If no key (shouldn't happen with Option B), just save and compress normally
+                # Caso sin cifrado (emergencia/desarrollo)
                 session_record.structured_json = final_json
-                m4a_path = self._compress_audio(audio_path)
-                if m4a_path:
-                    session_record.audio_path = m4a_path
-                    if os.path.exists(audio_path): os.remove(audio_path)
+                if original_audio_path != audio_path and os.path.exists(original_audio_path):
+                    os.remove(original_audio_path)
+                session_record.audio_path = audio_path
 
             session_record.status = "completed"
             db.commit()

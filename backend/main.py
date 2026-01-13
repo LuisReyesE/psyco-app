@@ -4,6 +4,7 @@ import sys
 import json
 import datetime
 import time
+
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 from typing import Optional, List
 from fastapi import FastAPI, UploadFile, File, BackgroundTasks, Depends, HTTPException, Form, Response
@@ -22,14 +23,21 @@ from contextlib import asynccontextmanager
 # In-memory "Key Cache" 
 ACTIVE_KEYS = {} 
 
+BASE_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Add local FFmpeg to PATH
-    ffmpeg_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "ffmpeg-tools", "ffmpeg-8.0.1-essentials_build", "bin"))
-    if os.path.exists(ffmpeg_path):
-        os.environ["PATH"] = ffmpeg_path + os.pathsep + os.environ["PATH"]
+    # Add local FFmpeg to PATH (Search dynamically for the bin folder)
+    ffmpeg_root = os.path.join(BASE_DIR, "ffmpeg-tools")
+    if os.path.exists(ffmpeg_root):
+        for root, dirs, files in os.walk(ffmpeg_root):
+            if "bin" in dirs:
+                ffmpeg_path = os.path.join(root, "bin")
+                os.environ["PATH"] = ffmpeg_path + os.pathsep + os.environ["PATH"]
+                print(f"FFmpeg found at: {ffmpeg_path}")
+                break
     
-    print("Starting up Session AI...")
+    print(f"Starting up Session AI... (Root: {BASE_DIR})")
     processor_manager.start_worker()
     # Load model in background to not block server startup
     threading.Thread(target=processor_manager.load_model, daemon=True).start()
@@ -48,8 +56,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Base directory (root of the project)
-BASE_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+# Application paths based on BASE_DIR
 DATA_DIR = os.path.join(BASE_DIR, "data")
 UPLOAD_DIR = os.path.join(DATA_DIR, "uploads")
 
@@ -171,7 +178,10 @@ async def upload_audio(
     patient = db.query(Patient).filter(Patient.id == patient_id).first()
     if not patient: raise HTTPException(status_code=404, detail="Patient not found")
 
-    file_path = os.path.join(UPLOAD_DIR, f"{patient_id}_{int(time.time())}.wav")
+    # Preservar extensión original para identificar formato en el procesador
+    ext = file.filename.split('.')[-1] if '.' in file.filename else 'wav'
+    file_path = os.path.join(UPLOAD_DIR, f"{patient_id}_{int(time.time())}.{ext}")
+    
     with open(file_path, "wb") as buffer:
         shutil.copyfileobj(file.file, buffer)
 
@@ -241,12 +251,21 @@ async def get_audio(session_id: int, token: str, db: Session = Depends(get_db)):
     
     if not s.audio_path.endswith(".enc"):
         if os.path.exists(s.audio_path):
-             return StreamingResponse(open(s.audio_path, "rb"), media_type="audio/mpeg")
+            ext = s.audio_path.split('.')[-1].lower()
+            mime = "audio/ogg" if ext == "ogg" or ext == "opus" else "audio/mpeg"
+            if ext == "webm": mime = "audio/webm"
+            return StreamingResponse(open(s.audio_path, "rb"), media_type=mime)
         raise HTTPException(status_code=404)
 
+    # For encrypted files, detect original format from path before .enc
+    original_path = s.audio_path.replace(".enc", "")
+    ext = original_path.split('.')[-1].lower()
+    mime = "audio/ogg" if ext == "ogg" or ext == "opus" else "audio/mp4"
+    if ext == "webm": mime = "audio/webm"
+    
     decrypted_bytes = decrypt_file_to_stream(s.audio_path, key)
     from io import BytesIO
-    return StreamingResponse(BytesIO(decrypted_bytes), media_type="audio/mp4")
+    return StreamingResponse(BytesIO(decrypted_bytes), media_type=mime)
 
 @app.get("/health")
 def health_check(): return {"status": "ok"}
