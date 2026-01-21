@@ -1,0 +1,51 @@
+{
+  "name": "session-ai",
+  "version": "1.0.0",
+  "description": "Gestión Psicoterapéutica con IA Local",
+  "main": "main.js",
+  "scripts": {
+    "start": "powershell -Command \"$env:ELECTRON_RUN_AS_NODE=$null; electron .\"",
+    "dist": "powershell -Command \"$env:ELECTRON_RUN_AS_NODE=$null; electron-builder\""
+  },
+  "author": "Alchemy Lab",
+  "license": "MIT",
+  "devDependencies": {
+    "electron": "^28.2.0",
+    "electron-builder": "^26.4.0"
+  },
+  "dependencies": {
+    "axios": "^1.6.5"
+  },
+  "build": {
+    "appId": "com.alchemylab.sessionai",
+    "productName": "Session AI",
+    "extraResources": [
+      {
+        "from": "python_runtime",
+        "to": "python_runtime"
+      },
+      {
+        "from": "backend",
+        "to": "backend"
+      },
+      {
+        "from": "ffmpeg-tools",
+        "to": "ffmpeg-tools"
+      }
+    ],
+    "directories": {
+      "output": "dist_electron"
+    },
+    "files": [
+      "**/*",
+      "!python_runtime",
+      "!backend",
+      "!ffmpeg-tools",
+      "!data"
+    ],
+    "win": {
+      "target": "nsis",
+      "icon": "frontend/assets/branding/session_ai.ico"
+    }
+  }
+}

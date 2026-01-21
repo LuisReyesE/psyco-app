@@ -4,12 +4,13 @@ import ollama
 import time
 import threading
 import queue
-import ctranslate2
+import re
 import subprocess
 from faster_whisper import WhisperModel
 from sqlalchemy.orm import Session
 from backend.database import SessionLocal, Session as DBSession
 from backend.security import encrypt_data, encrypt_file
+from backend.config import FFMPEG_DIR
 
 # Singleton for the processor manager
 class AudioProcessorManager:
@@ -31,14 +32,25 @@ class AudioProcessorManager:
         self.task_queue = queue.Queue()
         self.worker_thread = None
         self.is_running = False
-        self._initialized = True
+        if not self._initialized:
+             self._initialized = True
         
-        # Forzamos CPU para optimización de recursos según requerimiento
+        # Forzamos CPU
         self.device = "cpu"
         self.compute_type = "int8"
         
-        print(f"--- AudioProcessorManager Initialized (Modo Optimizado CPU) ---")
-        print(f"Device: {self.device} | Compute: {self.compute_type}")
+        # Detect FFmpeg path
+        self.ffmpeg_path = self._find_ffmpeg()
+        print(f"FFmpeg detected at: {self.ffmpeg_path}")
+
+    def _find_ffmpeg(self):
+        """Locates ffmpeg.exe in the tools temporary/local folder"""
+        # Start searching from the configured FFMPEG_DIR
+        for root, _, files in os.walk(FFMPEG_DIR):
+            if "ffmpeg.exe" in files:
+                return os.path.join(root, "ffmpeg.exe")
+                
+        return "ffmpeg"
 
     def load_model(self):
         """Loads the whisper model into memory"""
@@ -109,7 +121,7 @@ class AudioProcessorManager:
         try:
             # Comando optimizado: ffmpeg -i entrada -vn -c:a libopus -ar 16000 -ac 1 -b:a 12k salida.opus
             subprocess.run([
-                'ffmpeg', '-y', '-i', input_path, 
+                self.ffmpeg_path, '-y', '-i', input_path, 
                 '-vn', '-c:a', 'libopus', 
                 '-ar', '16000', '-ac', '1', 
                 '-b:a', '12k', output_path
@@ -151,7 +163,7 @@ class AudioProcessorManager:
                 vad_filter=True,
                 vad_parameters=dict(min_silence_duration_ms=500)
             )
-            
+            # entonces que mejoras podemos hacer al sistema, dame mejoras en cuestion de arquitectura, codigo, ui/ux
             transcript_text = ""
             for segment in segments:
                 transcript_text += f"[{segment.start:.2f}s - {segment.end:.2f}s] {segment.text}\n"
@@ -183,7 +195,7 @@ class AudioProcessorManager:
                 '{"nota_clinica": "El texto del párrafo aquí..."}'
             )
             
-            user_prompt = f"Conversación con {patient_name}:\n\n{safe_transcript}"
+            user_prompt = f"Conversación clínica:\n\n{safe_transcript}"
             
             final_json = {}
             try:
@@ -193,7 +205,14 @@ class AudioProcessorManager:
                 
                 response_text = response.get('response', '')
                 try:
-                    data = json.loads(response_text)
+                    # Robust parsing strategy
+                    # 1. Clean markdown code blocks (```json ... ```)
+                    clean_text = re.sub(r'```(?:json)?\s*', '', response_text).replace('```', '').strip()
+                    
+                    # 2. Try strict JSON parse
+                    data = json.loads(clean_text)
+                    
+                    # 3. Add metrics
                     data["_metrics"] = {
                         "transcription_time": transcribe_duration,
                         "generation_time": gen_duration,
@@ -202,8 +221,15 @@ class AudioProcessorManager:
                     }
                     data["_model_file"] = model_name
                     final_json = data
-                except:
-                    final_json = {"nota_clinica": "Error formateando respuesta", "_raw": response_text}
+                except Exception as e:
+                    # 4. FALLBACK: If JSON fails, treat the entire text as the note.
+                    # This fixes the "Error formateando respuesta" issue when models are chatty.
+                    print(f"JSON Parse failed: {e}. Falling back to raw text.")
+                    final_json = {
+                        "nota_clinica": response_text, 
+                        "_warning": "Formato no estructurado (JSON fallido)",
+                        "_raw": response_text
+                    }
             except Exception as e:
                 final_json = {"error": f"Ollama Error: {str(e)}"}
 

@@ -92,6 +92,21 @@ Simplemente haz doble clic en el archivo **`Session_AI.bat`** en la raíz del pr
    - En el primer uso, crea tu usuario y contraseña maestra.
    - ⚠️ **Importante:** Guarda tu contraseña en un lugar seguro. Sin ella, no podrás acceder a los datos cifrados.
 
+### 5. Generar Instalador (Build)
+
+Para crear el ejecutable `.exe` distribuible:
+
+1. **Instalar dependencias de Node.js:**
+   ```powershell
+   npm install
+   ```
+
+2. **Ejecutar script de construcción:**
+   ```powershell
+   npm run dist
+   ```
+   Esto generará el instalador en la carpeta `dist_electron/`.
+
 ## 🧠 Flujo de Trabajo
 
 1. **Registro inicial:** Crea tu cuenta de administrador local
@@ -168,7 +183,7 @@ ollama list
 - Si persiste, cierra todas las instancias del servidor
 
 ## 🗺️ Hoja de Ruta (Roadmap)
-- [ ] **Migración a Electron:** Convertir la aplicación web en una App de Escritorio nativa para mayor estabilidad.
+- [x] **Migración a Electron:** Aplicación de Escritorio nativa implementada (.exe).
 - [ ] **Notificaciones Nativas:** Alertas de Windows al finalizar el procesamiento.
 - [ ] **Modo Multilingüe:** Soporte para transcripción en más idiomas.
 

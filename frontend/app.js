@@ -20,17 +20,39 @@ let isFirstLoad = true;
 
 // Initial load
 document.addEventListener('DOMContentLoaded', async () => {
-    // 1. Mostrar estado inicial basado en token existente
+    // 1. Verificar registro/autenticación PRIMERO (loading screen visible)
+    await checkRegistration();
+
+    // 1.5 Verificar validez del Token (backend RAM check)
     if (authToken) {
-        document.getElementById('login-modal').classList.add('hidden');
+        const isValid = await validateSession(authToken);
+        if (!isValid) {
+            console.warn("Token local inválido o expirado. Forzando logout.");
+            authToken = null;
+            localStorage.removeItem('psyco_token');
+            sessionStorage.removeItem('psyco_token');
+        }
+    }
+
+    // 2. Ahora mostrar UI correcto basado en el estado
+    if (authToken) {
+        document.getElementById('auth-modal').classList.add('hidden');
         document.getElementById('logout-btn').classList.remove('hidden');
         initializeApp();
     } else {
-        document.getElementById('login-modal').classList.remove('hidden');
+        document.getElementById('auth-modal').classList.remove('hidden');
         document.getElementById('logout-btn').classList.add('hidden');
     }
 
-    // 2. Activar AudioContext al primer movimiento/clic
+    // 3. Ocultar loading screen con transición suave
+    const loadingScreen = document.getElementById('loading-screen');
+    if (loadingScreen) {
+        loadingScreen.style.transition = 'opacity 0.3s ease';
+        loadingScreen.style.opacity = '0';
+        setTimeout(() => loadingScreen.remove(), 300);
+    }
+
+    // 4. Activar AudioContext al primer movimiento/clic
     const unlockAudio = () => {
         if (!window.globalAudioCtx) {
             window.globalAudioCtx = new (window.AudioContext || window.webkitAudioContext)();
@@ -45,10 +67,17 @@ document.addEventListener('DOMContentLoaded', async () => {
     window.addEventListener('click', unlockAudio);
     window.addEventListener('keydown', unlockAudio);
 
-    await checkRegistration();
     checkServerStatus();
     setInterval(checkServerStatus, 5000);
     startSmartPolling();
+
+    // Listener para backup confirmation
+    document.getElementById('backup-confirm').addEventListener('change', (e) => {
+        const btn = document.getElementById('backup-continue-btn');
+        btn.disabled = !e.target.checked;
+        if (!e.target.checked) btn.classList.add('cursor-not-allowed', 'bg-slate-700', 'text-slate-400');
+        else btn.classList.remove('cursor-not-allowed', 'bg-slate-700', 'text-slate-400'), btn.classList.add('bg-emerald-600', 'text-white', 'hover:bg-emerald-700');
+    });
 });
 
 // No inicializar aquí para evitar bloqueos preventivos
@@ -63,25 +92,43 @@ async function checkRegistration() {
         const title = document.getElementById('login-title');
         const subtitle = document.getElementById('login-subtitle');
         const btn = document.getElementById('login-btn');
+        const links = document.getElementById('login-links');
 
         if (!isRegistered) {
             title.innerText = "Configuración Inicial";
-            subtitle.innerText = "Crea tu cuenta de administrador local";
+            subtitle.innerText = "Crea tu cuenta maestra";
             btn.innerText = "REGISTRAR Y EMPEZAR";
+            links.classList.add('hidden'); // No recovery link on register
         } else {
             title.innerText = "Acceso Profesional";
             subtitle.innerText = "Ingresa tus credenciales maestras";
             btn.innerText = "INICIAR SESIÓN";
+            links.classList.remove('hidden');
         }
     } catch (e) {
         console.error("Auth check failed", e);
     }
 }
 
+async function validateSession(token) {
+    if (!token) return false;
+    const formData = new FormData();
+    formData.append('token', token);
+    try {
+        const res = await fetch(`${API_URL}/auth/verify`, { method: 'POST', body: formData });
+        return res.ok;
+    } catch {
+        return false;
+    }
+}
+
 async function handleAuthAction() {
-    const user = document.getElementById('login-username').value;
-    const pass = document.getElementById('login-password').value;
+    const userInput = document.getElementById('login-username');
+    const passInput = document.getElementById('login-password');
     const errorMsg = document.getElementById('login-error');
+
+    const user = userInput.value;
+    const pass = passInput.value;
 
     if (!user || !pass) return;
 
@@ -99,33 +146,123 @@ async function handleAuthAction() {
 
         if (res.ok) {
             const data = await res.json();
+
             if (isRegistered) {
+                // LOGIN EXITOSO
                 authToken = data.token;
                 localStorage.setItem('psyco_token', authToken);
                 sessionStorage.setItem('psyco_token', authToken);
-                document.getElementById('login-modal').classList.add('hidden');
+                document.getElementById('auth-modal').classList.add('hidden');
                 document.getElementById('logout-btn').classList.remove('hidden');
+
+                // Clear inputs for security
+                userInput.value = '';
+                passInput.value = '';
+
                 initializeApp();
             } else {
-                // Just registered, now login
+                // REGISTRO EXITOSO -> MOSTRAR BACKUP CODE
+                document.getElementById('login-card').classList.add('hidden');
+                document.getElementById('backup-card').classList.remove('hidden');
+                document.getElementById('display-backup-code').innerText = data.recovery_code;
+
+                // Auto-fill username for UX next time
+                userInput.value = user;
+                passInput.value = '';
+
+                // Set flag locally so next time app reloads it shows login screen
                 isRegistered = true;
-                handleAuthAction();
             }
         } else {
             errorMsg.classList.remove('hidden');
-            setTimeout(() => errorMsg.classList.add('hidden'), 3000);
+            passInput.classList.add('shake', 'border-rose-500');
+            setTimeout(() => {
+                errorMsg.classList.add('hidden');
+                passInput.classList.remove('shake', 'border-rose-500');
+            }, 2000);
         }
     } catch (e) {
         console.error("Auth action failed", e);
     }
 }
 
+function finishBackupProcess() {
+    // Al terminar de guardar el backup, pedimos login normal para confirmar que se sabe la contraseña
+    document.getElementById('backup-card').classList.add('hidden');
+    document.getElementById('login-card').classList.remove('hidden');
+
+    // Forzamos actualización de UI a "Login Mode"
+    checkRegistration();
+
+    // UX: Mostrar mensaje de éxito en lugar de alert invasivo (que rompe el foco)
+    const subtitle = document.getElementById('login-subtitle');
+    subtitle.innerText = "¡Registro exitoso! Confirma tu contraseña.";
+    subtitle.className = "text-emerald-400 text-sm font-bold animate-pulse";
+
+    // Auto-focus en el password para que el usuario solo escriba y entre
+    setTimeout(() => {
+        const passInput = document.getElementById('login-password');
+        passInput.focus();
+        passInput.select();
+    }, 100);
+}
+
+function copyToClipboard() {
+    const code = document.getElementById('display-backup-code').innerText;
+    navigator.clipboard.writeText(code).then(() => {
+        alert("Código copiado al portapapeles");
+    });
+}
+
+function toggleRecoveryMode() {
+    const loginCard = document.getElementById('login-card');
+    const recCard = document.getElementById('recovery-card');
+
+    if (recCard.classList.contains('hidden')) {
+        loginCard.classList.add('hidden');
+        recCard.classList.remove('hidden');
+    } else {
+        recCard.classList.add('hidden');
+        loginCard.classList.remove('hidden');
+    }
+}
+
+async function handleRecovery() {
+    const username = document.getElementById('rec-username').value;
+    const code = document.getElementById('rec-code').value;
+    const newPass = document.getElementById('rec-new-password').value;
+    const errorTxt = document.getElementById('rec-error');
+
+    if (!username || !code || !newPass) return;
+
+    const formData = new FormData();
+    formData.append('username', username);
+    formData.append('recovery_code', code);
+    formData.append('new_password', newPass);
+
+    try {
+        const res = await fetch(`${API_URL}/auth/recover`, { method: 'POST', body: formData });
+        if (res.ok) {
+            alert('Contraseña restablecida correctamente. Inicia sesión con tus nuevas credenciales.');
+            // Clear inputs
+            document.getElementById('rec-username').value = '';
+            document.getElementById('rec-code').value = '';
+            document.getElementById('rec-new-password').value = '';
+            toggleRecoveryMode(); // Volver al login
+        } else {
+            errorTxt.innerText = "Código incorrecto o usuario perdido";
+            errorTxt.classList.remove('hidden');
+        }
+    } catch {
+        errorTxt.classList.remove('hidden');
+    }
+}
+
 function handleUnauthorized() {
-    // En lugar de un logout total, solo mostramos el modal de login
-    // para re-autenticar sin perder la vista actual (Paciente/Sesión)
     console.warn("Sesión expirada o servidor reiniciado. Solicitando re-autenticación.");
-    document.getElementById('login-modal').classList.remove('hidden');
-    document.getElementById('login-subtitle').innerText = "Tu sesión ha expirado. Por favor, ingresa de nuevo.";
+    if (sessionPollingInterval) clearInterval(sessionPollingInterval);
+    document.getElementById('auth-modal').classList.remove('hidden');
+    document.getElementById('login-subtitle').innerText = "Tu sesión ha expirado.";
     document.getElementById('login-subtitle').classList.add('text-rose-400');
 }
 
@@ -137,12 +274,16 @@ function handleLogout() {
     sessionStorage.removeItem('activePatientName');
     selectedPatientId = null;
 
-    document.getElementById('login-modal').classList.remove('hidden');
+    document.getElementById('auth-modal').classList.remove('hidden');
     document.getElementById('logout-btn').classList.add('hidden');
     document.getElementById('patient-view').classList.add('hidden');
     document.getElementById('intro-view').classList.remove('hidden');
     document.getElementById('patient-list').innerHTML = '';
     document.getElementById('session-table-body').innerHTML = '';
+
+    // Reset login UI
+    document.getElementById('login-username').value = '';
+    document.getElementById('login-password').value = '';
 }
 
 function initializeApp() {
@@ -154,6 +295,7 @@ function initializeApp() {
         }
     });
     loadModels();
+    startSmartPolling();
 }
 
 // Health Check
@@ -175,6 +317,7 @@ async function checkServerStatus() {
 // Smart Polling System
 function startSmartPolling() {
     // Verificar cada 5 segundos si necesitamos actualizar
+    if (sessionPollingInterval) clearInterval(sessionPollingInterval);
     sessionPollingInterval = setInterval(() => {
         if (selectedPatientId && authToken) {
             checkAndUpdateSessions();
@@ -250,36 +393,46 @@ function showVisualToast(message) {
     }, 6000);
 }
 
-// Nueva función para reproducir un sonido sintético elegante
+// Nueva función para reproducir un sonido sintético elegante (Melódico Ding-Dong)
 function playNotificationSound() {
     try {
         if (!window.globalAudioCtx) {
-            console.warn("AudioContext no inicializado aún por interacción del usuario.");
+            console.warn("AudioContext no inicializado");
             return;
         }
 
         const audioCtx = window.globalAudioCtx;
-        if (audioCtx.state === 'suspended') {
-            audioCtx.resume();
-        }
+        if (audioCtx.state === 'suspended') audioCtx.resume();
 
-        const oscillator = audioCtx.createOscillator();
-        const gainNode = audioCtx.createGain();
+        const now = audioCtx.currentTime;
 
-        oscillator.type = 'sine';
-        oscillator.frequency.setValueAtTime(880, audioCtx.currentTime);
-        oscillator.frequency.exponentialRampToValueAtTime(440, audioCtx.currentTime + 0.5);
+        // Primer tono (Ding)
+        const osc1 = audioCtx.createOscillator();
+        const gain1 = audioCtx.createGain();
+        osc1.type = 'sine';
+        osc1.frequency.setValueAtTime(659.25, now); // E5
+        gain1.gain.setValueAtTime(0, now);
+        gain1.gain.linearRampToValueAtTime(0.12, now + 0.05);
+        gain1.gain.exponentialRampToValueAtTime(0.01, now + 0.4);
+        osc1.connect(gain1);
+        gain1.connect(audioCtx.destination);
+        osc1.start(now);
+        osc1.stop(now + 0.4);
 
-        gainNode.gain.setValueAtTime(0.15, audioCtx.currentTime);
-        gainNode.gain.exponentialRampToValueAtTime(0.01, audioCtx.currentTime + 0.5);
+        // Segundo tono (Dong)
+        const osc2 = audioCtx.createOscillator();
+        const gain2 = audioCtx.createGain();
+        osc2.type = 'sine';
+        osc2.frequency.setValueAtTime(523.25, now + 0.15); // C5
+        gain2.gain.setValueAtTime(0, now + 0.15);
+        gain2.gain.linearRampToValueAtTime(0.12, now + 0.2);
+        gain2.gain.exponentialRampToValueAtTime(0.01, now + 0.6);
+        osc2.connect(gain2);
+        gain2.connect(audioCtx.destination);
+        osc2.start(now + 0.15);
+        osc2.stop(now + 0.6);
 
-        oscillator.connect(gainNode);
-        gainNode.connect(audioCtx.destination);
-
-        oscillator.start();
-        oscillator.stop(audioCtx.currentTime + 0.5);
-
-        console.log("🔔 Notificación: SONANDO AHORA");
+        console.log("🔔 Notificación Melódica: SONANDO AHORA");
     } catch (err) {
         console.error("No se pudo reproducir el sonido:", err);
     }
@@ -295,8 +448,8 @@ function renderSessionsTable(sessions) {
         return;
     }
 
-    // Usar una copia para el reverse y no afectar el array original
-    [...sessions].reverse().forEach(s => {
+    // Backend sends sorted data (Newest First)
+    sessions.forEach(s => {
         const row = document.createElement('tr');
         row.className = "hover:bg-slate-800/40 transition-all group";
 
@@ -359,13 +512,13 @@ function checkForActiveProcessing(sessions) {
     return isProcessing;
 }
 
-function formatDuration(seconds) {
-    if (!seconds && seconds !== 0) return "-";
-    if (seconds < 60) return `${seconds}s`;
-    const m = Math.floor(seconds / 60);
-    const s = Math.floor(seconds % 60);
-    return `${m}m ${s}s`;
-}
+const formatDuration = (s) => {
+    if (!s || isNaN(s)) return '0s';
+    if (s < 60) return `${Math.round(s)}s`;
+    const m = Math.floor(s / 60);
+    const sec = Math.round(s % 60);
+    return `${m}m ${sec}s`;
+};
 
 async function loadModels() {
     try {
@@ -522,7 +675,7 @@ async function openSession(id) {
         notaArea.value = struct.nota_clinica || "Analizando...";
 
         // Setup Audio Stream
-        player.src = `${API_URL}/audio/${id}?token=${authToken}`;
+        player.src = `${API_URL}/sessions/${id}/audio?token=${authToken}`;
 
         // Icon toggle logic
         playBtn.onclick = () => player.paused ? player.play() : player.pause();
@@ -535,7 +688,10 @@ async function openSession(id) {
         saveBtn.onclick = () => saveSessionEdits(id);
 
         document.getElementById('session-modal').classList.remove('hidden');
-    } catch (e) { }
+    } catch (e) {
+        console.error("DEBUG: Open session error", e);
+        alert("Error al abrir detalle: " + e.message);
+    }
 }
 
 async function saveSessionEdits(id) {

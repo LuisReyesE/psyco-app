@@ -1,74 +1,40 @@
-# Entornos virtuales de Python
-venv/
-venv_clean/
-env/
-ENV/
-.venv
-
-# Archivos de Python
+# Python
 __pycache__/
 *.py[cod]
-*$py.class
-*.so
-.Python
-
-# Base de datos y datos sensibles
-data/
-*.db
-*.db-shm
-*.db-wal
-db_content.txt
-
-# Archivos de audio (pueden contener información sensible)
-*.wav
-*.mp3
-*.m4a
-*.ogg
-*.flac
-*.enc
-
-# Archivos de configuración sensibles
+*.class
+venv/
+venv_clean/
+python_runtime/
 .env
-.env.local
-*.key
-*.pem
 
-# IDEs y editores
+# Node/Electron
+node_modules/
+dist/
+dist_electron/
+out/
+package-lock.json
+yarn.lock
+pnpm-lock.yaml
+pnpm-workspace.yaml
+
+# Binaries/Tools
+ffmpeg-tools/
+
+# Data/Logs
+data/
+*.log
+*.db
+*.sqlite3
+server.log.old
+Session_AI.bat
+Session_AI.vbs
+
+# IDEs
 .vscode/
 .idea/
 *.swp
-*.swo
-*~
-.DS_Store
 
-# Logs
-*.log
-logs/
-
-# Herramientas de sistema (muy pesadas para Git)
-ffmpeg-tools/
-
-# Archivos temporales
-*.tmp
-*.temp
-temp/
-tmp/
-
-# Archivos de sistema Windows
+# OS
 Thumbs.db
-desktop.ini
-
-# Archivos de sistema macOS
+Desktop.ini
 .DS_Store
-.AppleDouble
-.LSOverride
-
-# Backups
-*.bak
-*.backup
-backup/
-
-# Archivos de distribución
-dist/
-build/
-*.egg-info/

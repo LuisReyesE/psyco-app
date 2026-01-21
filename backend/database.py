@@ -1,19 +1,9 @@
-import os
 import datetime
 from sqlalchemy import create_engine, Column, Integer, String, Text, ForeignKey, JSON, DateTime
-from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker, relationship
-
-# Base directory (root of the project)
-# Usamos un método más robusto para encontrar la raíz real del proyecto
-current_file_path = os.path.abspath(__file__)
-backend_dir = os.path.dirname(current_file_path)
-BASE_DIR = os.path.dirname(backend_dir)
-DATA_DIR = os.path.join(BASE_DIR, "data")
-DB_PATH = os.path.join(DATA_DIR, 'psyco_app.db')
-
-if not os.path.exists(DATA_DIR):
-    os.makedirs(DATA_DIR, exist_ok=True)
+from sqlalchemy.ext.declarative import declarative_base
+from backend.config import DB_PATH
+import os
 
 # En Windows, formateamos la ruta para que SQLite no se confunda
 SQLALCHEMY_DATABASE_URL = f"sqlite:///{DB_PATH.replace(os.sep, '/')}"
@@ -40,8 +30,19 @@ class User(Base):
     __tablename__ = "users"
     id = Column(Integer, primary_key=True, index=True)
     username = Column(String, unique=True, index=True)
+    
+    # Auth basica
     hashed_password = Column(String)
-    salt = Column(String) # For key derivation
+    salt = Column(String) # Salt para derivar clave de la contraseña
+    
+    # Master Key System (Doble Caja Fuerte)
+    # Caja 1: MK cifrada con la contraseña del usuario
+    encrypted_master_key = Column(String) 
+    
+    # Caja 2: MK cifrada con el Código de Recuperación
+    recovery_encrypted_master_key = Column(String)
+    recovery_salt = Column(String) # Salt específico para el código de recuperación
+    
     created_at = Column(DateTime, default=datetime.datetime.now)
 
 class Patient(Base):
@@ -65,9 +66,3 @@ class Session(Base):
     created_at = Column(DateTime, default=datetime.datetime.now)
 
     patient = relationship("Patient", back_populates="sessions")
-
-def init_db():
-    Base.metadata.create_all(bind=engine)
-
-if __name__ == "__main__":
-    init_db()

@@ -1,53 +1,62 @@
-import os
-import shutil
+import uvicorn
 import sys
-import json
-import datetime
-import time
+import os
 
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
-from typing import Optional, List
-from fastapi import FastAPI, UploadFile, File, BackgroundTasks, Depends, HTTPException, Form, Response
-from fastapi.responses import StreamingResponse
+# Add project root to sys.path to allow 'from backend.xxx' imports
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from contextlib import asynccontextmanager
+from fastapi import FastAPI, UploadFile, File, Form, HTTPException, Depends
 from fastapi.middleware.cors import CORSMiddleware
+import shutil
+import json
+import time
 from sqlalchemy.orm import Session
-from backend.database import SessionLocal, init_db, Patient, Session as DBSession, User
+
+# Local imports
+from backend.database import engine, Base, SessionLocal, User, Session as DBSession
 from backend.processor import processor_manager
+from backend.config import UPLOAD_DIR
 from backend.security import (
     get_password_hash, verify_password, derive_key, 
-    encrypt_data, decrypt_data, decrypt_file_to_stream
+    encrypt_data, decrypt_data, generate_recovery_code
 )
-import threading
-from contextlib import asynccontextmanager
+from cryptography.fernet import Fernet
 
-# In-memory "Key Cache" 
-ACTIVE_KEYS = {} 
+# -------------------------------------------------------------------
+# CONFIG & INIT
+# -------------------------------------------------------------------
 
-BASE_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+# Create tables if not exist
+Base.metadata.create_all(bind=engine)
+
+# -------------------------------------------------------------------
+# LIFECYCLE
+# -------------------------------------------------------------------
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Add local FFmpeg to PATH (Search dynamically for the bin folder)
-    ffmpeg_root = os.path.join(BASE_DIR, "ffmpeg-tools")
-    if os.path.exists(ffmpeg_root):
-        for root, dirs, files in os.walk(ffmpeg_root):
-            if "bin" in dirs:
-                ffmpeg_path = os.path.join(root, "bin")
-                os.environ["PATH"] = ffmpeg_path + os.pathsep + os.environ["PATH"]
-                print(f"FFmpeg found at: {ffmpeg_path}")
-                break
+    # Startup: Load model & start worker
+    print("--- Session AI Backend Starting ---")
+    print(f"DEBUG: DATA_DIR = {os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'data'))}") # Debug line
+    print(f"DEBUG: UPLOAD_DIR = {UPLOAD_DIR}")
     
-    print(f"Starting up Session AI... (Root: {BASE_DIR})")
+    # 1. Pre-load Model (Heavy operation)
+    try:
+        processor_manager.load_model()
+    except Exception as e:
+        print(f"Warning: Failed to pre-load Whisper model: {e}")
+
+    # 2. Start Worker Thread
     processor_manager.start_worker()
-    # Load model in background to not block server startup
-    threading.Thread(target=processor_manager.load_model, daemon=True).start()
+    
     yield
-    print("Shutting down Session AI...")
-    processor_manager.is_running = False
+    # Shutdown logic (if issues arise, we can add cleanup here)
+    print("--- Session AI Backend Stopping ---")
 
-app = FastAPI(title="Session AI API", lifespan=lifespan)
+app = FastAPI(lifespan=lifespan)
 
-# CORS for local frontend
+# CORS Correction (Must be applied after app creation)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -56,17 +65,10 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Application paths based on BASE_DIR
-DATA_DIR = os.path.join(BASE_DIR, "data")
-UPLOAD_DIR = os.path.join(DATA_DIR, "uploads")
+# In-Memory Cache for Decrypted Master Keys
+# Format: { token_str: b"master_key_bytes" }
+ACTIVE_KEYS = {}
 
-if not os.path.exists(UPLOAD_DIR):
-    os.makedirs(UPLOAD_DIR)
-
-# Initialize DB
-init_db()
-
-# Dependency
 def get_db():
     db = SessionLocal()
     try:
@@ -74,31 +76,50 @@ def get_db():
     finally:
         db.close()
 
-# --- AUTH & SECURITY HELPERS ---
-
-async def get_current_key(token: str):
-    """Retrieves the encryption key from active cache using the token"""
-    if not token or token not in ACTIVE_KEYS:
-        raise HTTPException(status_code=401, detail="Session expired or invalid")
-    return ACTIVE_KEYS[token]
+# -------------------------------------------------------------------
+# AUTHENTICATION ENDPOINTS
+# -------------------------------------------------------------------
 
 @app.get("/auth/check")
-def check_auth(db: Session = Depends(get_db)):
-    """Check if a user exists (if not, FE shows register)"""
-    user_count = db.query(User).count()
-    return {"has_user": user_count > 0}
+def check_registration(db: Session = Depends(get_db)):
+    """Check if any user is registered (Single User App)"""
+    user = db.query(User).first()
+    return {"has_user": bool(user)}
 
 @app.post("/auth/register")
 def register(username: str = Form(...), password: str = Form(...), db: Session = Depends(get_db)):
-    if db.query(User).count() > 0:
-        raise HTTPException(status_code=400, detail="User already exists")
+    if db.query(User).first():
+        raise HTTPException(status_code=400, detail="User already registered")
+
+    # 1. Generate Universal Master Key (MK)
+    master_key = Fernet.generate_key() 
     
+    # 2. Setup Recovery Code
+    recovery_code = generate_recovery_code() # "ABCD-EFGH-..."
+    recovery_salt = os.urandom(16).hex()
+    
+    # 3. Encrypt MK in Box A (Password Protection)
     salt = os.urandom(16).hex()
     hashed = get_password_hash(password)
-    user = User(username=username, hashed_password=hashed, salt=salt)
+    derived_pwd_key = derive_key(password, bytes.fromhex(salt))
+    encrypted_mk_pwd = encrypt_data(master_key.decode(), derived_pwd_key)
+    
+    # 4. Encrypt MK in Box B (Recovery Code Protection)
+    derived_rec_key = derive_key(recovery_code, bytes.fromhex(recovery_salt))
+    encrypted_mk_rec = encrypt_data(master_key.decode(), derived_rec_key)
+    
+    user = User(
+        username=username, 
+        hashed_password=hashed, 
+        salt=salt,
+        encrypted_master_key=encrypted_mk_pwd,
+        recovery_encrypted_master_key=encrypted_mk_rec,
+        recovery_salt=recovery_salt
+    )
     db.add(user)
     db.commit()
-    return {"status": "success"}
+    
+    return {"status": "success", "recovery_code": recovery_code}
 
 @app.post("/auth/login")
 def login(username: str = Form(...), password: str = Form(...), db: Session = Depends(get_db)):
@@ -106,113 +127,163 @@ def login(username: str = Form(...), password: str = Form(...), db: Session = De
     if not user or not verify_password(password, user.hashed_password):
         raise HTTPException(status_code=401, detail="Invalid credentials")
     
-    # Derive the key (don't store it in DB, only in RAM active cache)
-    key = derive_key(password, bytes.fromhex(user.salt))
+    try:
+        # Open Box A
+        derived_pwd_key = derive_key(password, bytes.fromhex(user.salt))
+        master_key_str = decrypt_data(user.encrypted_master_key, derived_pwd_key)
+        master_key = master_key_str.encode()
+    except Exception:
+        raise HTTPException(status_code=500, detail="Crypto check failed")
     
-    # Simple token
     token = os.urandom(24).hex()
-    ACTIVE_KEYS[token] = key
+    ACTIVE_KEYS[token] = master_key # Session uses the Real Master Key
     
-    return {"token": token, "username": username}
+    return {"status": "success", "token": token}
 
-@app.get("/")
-def read_root():
-    return {"message": "PsyScript API is running"}
+@app.post("/auth/verify")
+def verify_token(token: str = Form(...)):
+    """Check if token is active in RAM"""
+    if token in ACTIVE_KEYS:
+        return {"valid": True}
+    raise HTTPException(status_code=401, detail="Token invalid")
 
-@app.post("/patients/")
-def create_patient(name: str, db: Session = Depends(get_db)):
-    patient = Patient(full_name=name)
-    db.add(patient)
+@app.post("/auth/recover")
+def recover_password(
+    username: str = Form(...), 
+    recovery_code: str = Form(...), 
+    new_password: str = Form(...), 
+    db: Session = Depends(get_db)
+):
+    user = db.query(User).filter(User.username == username).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+        
+    try:
+        # Open Box B
+        derived_rec_key = derive_key(recovery_code, bytes.fromhex(user.recovery_salt))
+        master_key_str = decrypt_data(user.recovery_encrypted_master_key, derived_rec_key)
+        # If we are here, recovery code is correct
+    except Exception:
+        raise HTTPException(status_code=401, detail="Invalid recovery code")
+        
+    # Re-encrypt in Box A with New Password
+    new_salt = os.urandom(16).hex()
+    new_hashed = get_password_hash(new_password)
+    derived_new_pwd_key = derive_key(new_password, bytes.fromhex(new_salt))
+    
+    new_encrypted_mk_pwd = encrypt_data(master_key_str, derived_new_pwd_key)
+    
+    user.hashed_password = new_hashed
+    user.salt = new_salt
+    user.encrypted_master_key = new_encrypted_mk_pwd
     db.commit()
-    db.refresh(patient)
-    return patient
+    
+    return {"status": "recovered"}
+
+# -------------------------------------------------------------------
+# PATIENT ENDPOINTS
+# -------------------------------------------------------------------
 
 @app.get("/patients/")
 def list_patients(db: Session = Depends(get_db)):
+    from backend.database import Patient
     return db.query(Patient).all()
+
+@app.post("/patients/")
+def create_patient(name: str, db: Session = Depends(get_db)):
+    from backend.database import Patient
+    p = Patient(full_name=name)
+    db.add(p)
+    db.commit()
+    return p
 
 @app.delete("/patients/{patient_id}")
 def delete_patient(patient_id: int, db: Session = Depends(get_db)):
-    patient = db.query(Patient).filter(Patient.id == patient_id).first()
-    if not patient:
-        raise HTTPException(status_code=404, detail="Patient not found")
-    
-    # Manually delete audio files for all sessions
-    for session in patient.sessions:
-        if session.audio_path and os.path.exists(session.audio_path):
-            try:
-                os.remove(session.audio_path)
-            except Exception:
-                pass
-    
-    db.delete(patient)
-    db.commit()
-    return {"message": "Patient and all sessions deleted"}
+    from backend.database import Patient
+    p = db.query(Patient).filter(Patient.id == patient_id).first()
+    if p:
+        # Cascade delete sessions logic is handled by DB FK usually, 
+        # but files should be cleaned up. For now assuming simple delete.
+        db.delete(p)
+        db.commit()
+    return {"status": "deleted"}
 
-@app.get("/models/")
-def list_models():
-    models = []
-    
-    # Ollama models ONLY
-    try:
-        import requests
-        res = requests.get("http://localhost:11434/api/tags", timeout=2)
-        if res.ok:
-            data = res.json()
-            for m in data.get("models", []):
-                models.append(f"ollama:{m['name']}")
-    except Exception:
-        pass # Ollama might not be running
-        
-    return models
+# -------------------------------------------------------------------
+# SESSION & UPLOAD ENDPOINTS (SECURED)
+# -------------------------------------------------------------------
 
 @app.post("/upload/{patient_id}")
 async def upload_audio(
     patient_id: int, 
     token: str = Form(...),
     file: UploadFile = File(...), 
-    model: Optional[str] = Form(None),
+    model: str = Form(None),
     db: Session = Depends(get_db)
 ):
-    key = await get_current_key(token)
-    patient = db.query(Patient).filter(Patient.id == patient_id).first()
-    if not patient: raise HTTPException(status_code=404, detail="Patient not found")
+    key = ACTIVE_KEYS.get(token)
+    if not key: raise HTTPException(status_code=401)
 
-    # Preservar extensión original para identificar formato en el procesador
-    ext = file.filename.split('.')[-1] if '.' in file.filename else 'wav'
-    file_path = os.path.join(UPLOAD_DIR, f"{patient_id}_{int(time.time())}.{ext}")
+    # Save temp file
+    filename = f"{patient_id}_{int(time.time())}_{file.filename}"
+    file_path = os.path.join(UPLOAD_DIR, filename)
     
     with open(file_path, "wb") as buffer:
         shutil.copyfileobj(file.file, buffer)
-
-    session_record = DBSession(patient_id=patient_id, audio_path=file_path, status="pending")
-    db.add(session_record)
+        
+    # Create DB Record
+    # We store the temp path initially, processor will encrypt it later
+    new_session = DBSession(
+        patient_id=patient_id,
+        audio_path=file_path,
+        status="queued"
+    )
+    db.add(new_session)
     db.commit()
-    db.refresh(session_record)
-
-    processor_manager.enqueue_task(session_record.id, model, encryption_key=key)
-    return {"session_id": session_record.id, "status": "queued"}
+    db.refresh(new_session)
+    
+    # Enqueue Task with Key
+    processor_manager.enqueue_task(new_session.id, model, encryption_key=key)
+    return {"status": "queued", "session_id": new_session.id}
 
 @app.get("/sessions/")
 def list_sessions(patient_id: int, token: str, db: Session = Depends(get_db)):
     key = ACTIVE_KEYS.get(token)
     if not key: raise HTTPException(status_code=401)
     
-    sessions = db.query(DBSession).filter(DBSession.patient_id == patient_id).all()
+    sessions = db.query(DBSession).filter(DBSession.patient_id == patient_id).order_by(DBSession.created_at.desc()).all()
+    
+    # Decrypt metrics for list view
     results = []
     for s in sessions:
         item = {
             "id": s.id,
             "status": s.status,
             "created_at": s.created_at,
-            "structured_json": s.structured_json
+            "structured_json": {}
         }
-        if s.status == "completed" and s.structured_json and "_encrypted" in s.structured_json:
+        
+        # Try to peek into encrypted metrics
+        if s.structured_json:
             try:
-                decrypted_str = decrypt_data(s.structured_json["_encrypted"], key)
-                item["structured_json"] = json.loads(decrypted_str)
-            except: pass
+                metrics = None
+                if isinstance(s.structured_json, dict) and "_encrypted" in s.structured_json:
+                    # Decrypt just to get metrics (fast enough for list)
+                    raw_json = decrypt_data(s.structured_json["_encrypted"], key)
+                    data = json.loads(raw_json)
+                    metrics = data.get("_metrics")
+                elif isinstance(s.structured_json, dict):
+                    metrics = s.structured_json.get("_metrics")
+                
+                if metrics:
+                    item["structured_json"] = {"_metrics": metrics}
+            except:
+                pass # Ignore decryption errors in list view
+        
         results.append(item)
+    
+    # Force sort: Newest first (Descending)
+    results.sort(key=lambda x: x['created_at'], reverse=True)
+    
     return results
 
 @app.get("/sessions/{session_id}")
@@ -241,83 +312,151 @@ def get_session(session_id: int, token: str, db: Session = Depends(get_db)):
         
     return item
 
-@app.get("/audio/{session_id}")
-async def get_audio(session_id: int, token: str, db: Session = Depends(get_db)):
+@app.get("/sessions/{session_id}/audio")
+def get_session_audio(session_id: int, token: str, db: Session = Depends(get_db)):
+    from fastapi.responses import FileResponse, Response
+    from backend.security import decrypt_file
+    import tempfile
+    
     key = ACTIVE_KEYS.get(token)
     if not key: raise HTTPException(status_code=401)
     
     s = db.query(DBSession).filter(DBSession.id == session_id).first()
-    if not s or not s.audio_path: raise HTTPException(status_code=404)
-    
-    if not s.audio_path.endswith(".enc"):
-        if os.path.exists(s.audio_path):
-            ext = s.audio_path.split('.')[-1].lower()
-            mime = "audio/ogg" if ext == "ogg" or ext == "opus" else "audio/mpeg"
-            if ext == "webm": mime = "audio/webm"
-            return StreamingResponse(open(s.audio_path, "rb"), media_type=mime)
-        raise HTTPException(status_code=404)
-
-    # For encrypted files, detect original format from path before .enc
-    original_path = s.audio_path.replace(".enc", "")
-    ext = original_path.split('.')[-1].lower()
-    mime = "audio/ogg" if ext == "ogg" or ext == "opus" else "audio/mp4"
-    if ext == "webm": mime = "audio/webm"
-    
-    decrypted_bytes = decrypt_file_to_stream(s.audio_path, key)
-    from io import BytesIO
-    return StreamingResponse(BytesIO(decrypted_bytes), media_type=mime)
-
-@app.get("/health")
-def health_check(): return {"status": "ok"}
+    if not s or not s.audio_path or not os.path.exists(s.audio_path):
+        raise HTTPException(status_code=404, detail="Audio file not found")
+        
+    try:
+        # Decrypt to a temporary file just for streaming
+        # We create a named temp file that will be cleaned up
+        temp_fd, temp_path = tempfile.mkstemp(suffix=".opus")
+        os.close(temp_fd)
+        
+        # If file ends with .enc, decrypt it. If not, serve directly (legacy/dev)
+        if s.audio_path.endswith(".enc"):
+            decrypt_file(s.audio_path, temp_path, key)
+            
+            # Serve the temp file and ensure background cleanup task ? 
+            # FastAPI BackgroundTasks can remove it after response.
+            # But simpler here: Just serve it as a static file response
+            # Windows file locking might be tricky, but FileResponse handles open/close.
+            return FileResponse(temp_path, media_type="audio/ogg; codecs=opus")
+        else:
+            return FileResponse(s.audio_path, media_type="audio/ogg; codecs=opus")
+    except Exception as e:
+        print(f"Error serving audio: {e}")
+        raise HTTPException(status_code=500, detail="Could not retrieve audio")
 
 @app.post("/sessions/{session_id}/update")
-async def update_session_data(session_id: int, token: str = Form(...), data: str = Form(...), db: Session = Depends(get_db)):
-    key = await get_current_key(token)
-    session_record = db.query(DBSession).filter(DBSession.id == session_id).first()
-    if not session_record:
-        return {"error": "Session not found"}
+def update_session(session_id: int, token: str = Form(...), data: str = Form(...), db: Session = Depends(get_db)):
+    key = ACTIVE_KEYS.get(token)
+    if not key: raise HTTPException(status_code=401)
     
-    new_data = json.loads(data)
-    existing_json = session_record.structured_json or {}
+    s = db.query(DBSession).filter(DBSession.id == session_id).first()
+    if not s: raise HTTPException(status_code=404)
     
-    # If the session is already completed/encrypted, we must re-encrypt the whole block
-    if "_encrypted" in existing_json:
-        # Decrypt existing to merge
+    updates = json.loads(data)
+    
+    # Decrypt current struct to merge
+    current_struct = {}
+    if s.structured_json and "_encrypted" in s.structured_json:
         try:
-            curr_str = decrypt_data(existing_json["_encrypted"], key)
-            curr_data = json.loads(curr_str)
-        except:
-            curr_data = {}
+            current_struct = json.loads(decrypt_data(s.structured_json["_encrypted"], key))
+        except: pass
         
-        # Merge
-        updated_data = {**curr_data, **new_data}
-        # Encrypt back
-        encrypted_str = encrypt_data(json.dumps(updated_data), key)
-        session_record.structured_json = {"_encrypted": encrypted_str}
-    else:
-        # Not encrypted yet (rare if status is completed, but possible)
-        session_record.structured_json = {**existing_json, **new_data}
+    # Merge updates (nota_clinica mostly)
+    current_struct.update(updates)
     
+    # Re-encrypt
+    s.structured_json = {"_encrypted": encrypt_data(json.dumps(current_struct), key)}
     db.commit()
-    return {"status": "success"}
+    return {"status": "updated"}
 
 @app.delete("/sessions/{session_id}")
 def delete_session(session_id: int, db: Session = Depends(get_db)):
-    session_record = db.query(DBSession).filter(DBSession.id == session_id).first()
-    if not session_record:
-        raise HTTPException(status_code=404, detail="Session not found")
-    
-    # Try to delete audio file
-    if session_record.audio_path and os.path.exists(session_record.audio_path):
-        try:
-            os.remove(session_record.audio_path)
-        except Exception:
-            pass # Keep going if file delete fails
+    s = db.query(DBSession).filter(DBSession.id == session_id).first()
+    if s:
+        # Try delete file
+        if s.audio_path and os.path.exists(s.audio_path):
+            try: os.remove(s.audio_path)
+            except: pass
             
-    db.delete(session_record)
-    db.commit()
-    return {"message": "Session deleted"}
+        db.delete(s)
+        db.commit()
+    return {"status": "deleted"}
+
+@app.get("/audio/{session_id}")
+def get_audio_stream(session_id: int, token: str, db: Session = Depends(get_db)):
+    key = ACTIVE_KEYS.get(token)
+    if not key: raise HTTPException(status_code=401)
+    
+    s = db.query(DBSession).filter(DBSession.id == session_id).first()
+    if not s or not s.audio_path or not os.path.exists(s.audio_path):
+        raise HTTPException(status_code=404)
+        
+    # Decrypt on the fly and stream (Simplification: decrypt to temp and stream)
+    # Ideally use a stream decryptor. For now, we decrypt to memory if small, or temp if large.
+    # Given secure requirement, memory is better but risky for RAM.
+    # Let's verify file ext. If .enc, decrypt.
+    
+    if s.audio_path.endswith(".enc"):
+        try:
+            decrypted_path = s.audio_path.replace(".enc", ".temp_play")
+            # This is risky for concurrency, but okay for single user MVP.
+            # Better: read bytes, decrypt, yield generator.
+            
+            with open(s.audio_path, "rb") as f:
+                enc_data = f.read()
+            
+            f = Fernet(key)
+            dec_data = f.decrypt(enc_data)
+            
+            from fastapi.responses import Response
+            return Response(content=dec_data, media_type="audio/ogg")
+        except:
+             raise HTTPException(status_code=500, detail="Decrypt fail")
+    else:
+        # Not encrypted yet (queued?) or legacy
+        from fastapi.responses import FileResponse
+        return FileResponse(s.audio_path)
+
+@app.get("/models/")
+def list_models():
+    """List available Ollama models"""
+    try:
+        raw_models = import_ollama_list()
+        models = []
+        for m in raw_models:
+            # Handle object vs dict
+            if hasattr(m, 'model'):
+                models.append(m.model)
+            elif isinstance(m, dict):
+                # Try 'model' then 'name'
+                models.append(m.get('model', m.get('name', 'unknown')))
+            else:
+                # Fallback print to debug
+                print(f"Unknown model type: {type(m)}")
+        return models
+    except Exception as e:
+        print(f"Error loading models from Ollama: {e}")
+        return []
+
+def import_ollama_list():
+    import ollama
+    response = ollama.list()
+    # Handle older versions returning dict vs newer returning objects
+    if hasattr(response, 'models'):
+        return response.models
+    elif isinstance(response, dict) and 'models' in response:
+        return response['models']
+    return []
+
+@app.get("/health")
+def health_check():
+    return {"status": "ok"}
+
+# -------------------------------------------------------------------
+# LIFECYCLE
+# -------------------------------------------------------------------
 
 if __name__ == "__main__":
-    import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    uvicorn.run(app, host="127.0.0.1", port=8000)

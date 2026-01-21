@@ -5,19 +5,21 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Session AI | Gestión Psicoterapéutica</title>
-    <link rel="icon" type="image/x-icon" href="assets/branding/favicon.ico">
-    <script src="https://cdn.tailwindcss.com"></script>
-    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;600&display=swap" rel="stylesheet">
+    <!-- Content Security Policy (Strict & Offline) -->
+    <meta http-equiv="Content-Security-Policy"
+        content="default-src 'self'; connect-src 'self' http://127.0.0.1:8000 ws://127.0.0.1:8000; script-src 'self' 'unsafe-inline' 'unsafe-eval'; style-src 'self' 'unsafe-inline'; font-src 'self' data:; img-src 'self' data:; media-src 'self' http://127.0.0.1:8000 data:;">
+
+    <!-- Tailwind CSS (Offline Mode) -->
+    <script src="./css/tailwind.script.js"></script>
+
+    <!-- Local Fonts -->
+    <link href="./css/fonts.css" rel="stylesheet">
     <style>
         :root {
             --bg-dark: #0f172a;
             --card-dark: #1e293b;
             --text-main: #f1f5f9;
-            --text-dim: #94a3b8;
             --primary: #6366f1;
-            --primary-hover: #4f46e5;
-            --success: #10b981;
-            --danger: #ef4444;
             --border: #334155;
         }
 
@@ -37,10 +39,14 @@
             border-radius: 1.25rem;
         }
 
-        .glass {
-            background: rgba(30, 41, 59, 0.7);
-            backdrop-filter: blur(12px);
-            border: 1px solid rgba(255, 255, 255, 0.05);
+        /* Estilo para que el input no se ponga amarillo/azul con autocompletado */
+        input:-webkit-autofill,
+        input:-webkit-autofill:hover,
+        input:-webkit-autofill:focus,
+        input:-webkit-autofill:active {
+            -webkit-box-shadow: 0 0 0 30px #0d121f inset !important;
+            -webkit-text-fill-color: white !important;
+            transition: background-color 5000s ease-in-out 0s;
         }
 
         input,
@@ -52,21 +58,14 @@
             transition: all 0.2s;
         }
 
-        input:focus,
-        select:focus,
-        textarea:focus {
+        input:focus {
             border-color: var(--primary) !important;
             box-shadow: 0 0 0 2px rgba(99, 102, 241, 0.2);
             outline: none;
         }
 
-        /* Scrollbar */
         ::-webkit-scrollbar {
             width: 6px;
-        }
-
-        ::-webkit-scrollbar-track {
-            background: transparent;
         }
 
         ::-webkit-scrollbar-thumb {
@@ -74,39 +73,63 @@
             border-radius: 10px;
         }
 
-        ::-webkit-scrollbar-thumb:hover {
-            background: #475569;
-        }
-
         .patient-item {
             border-left: 3px solid transparent;
         }
 
         .patient-item.selected {
-            background-color: rgba(99, 102, 241, 0.15);
+            background: rgba(99, 102, 241, 0.15);
             border-left-color: var(--primary);
         }
 
-        .empty-state {
-            background: radial-gradient(circle at center, rgba(99, 102, 241, 0.05) 0%, transparent 70%);
+        .shake {
+            animation: shake 0.5s cubic-bezier(.36, .07, .19, .97) both;
         }
 
-        .btn-status {
-            transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
-        }
+        @keyframes shake {
 
-        .btn-status:active {
-            transform: scale(0.95);
+            10%,
+            90% {
+                transform: translate3d(-1px, 0, 0);
+            }
+
+            20%,
+            80% {
+                transform: translate3d(2px, 0, 0);
+            }
+
+            30%,
+            50%,
+            70% {
+                transform: translate3d(-4px, 0, 0);
+            }
+
+            40%,
+            60% {
+                transform: translate3d(4px, 0, 0);
+            }
         }
     </style>
 </head>
 
 <body class="text-slate-200">
 
-    <!-- Auth Modal (Registration/Login) -->
-    <div id="login-modal"
+    <!-- Loading Screen -->
+    <div id="loading-screen" class="fixed inset-0 bg-slate-950 z-[200] flex items-center justify-center">
+        <div class="text-center">
+            <div
+                class="w-16 h-16 border-4 border-indigo-500 border-t-transparent rounded-full animate-spin mx-auto mb-4">
+            </div>
+            <p class="text-slate-400">Cargando Session AI...</p>
+        </div>
+    </div>
+
+    <!-- SECURITY & AUTH MODAL -->
+    <div id="auth-modal"
         class="hidden fixed inset-0 bg-slate-950/95 backdrop-blur-2xl z-[100] flex items-center justify-center p-4">
-        <div
+
+        <!-- 1. Login Card -->
+        <div id="login-card"
             class="custom-card w-full max-w-sm p-10 space-y-8 animate-in zoom-in-95 duration-300 border-indigo-500/20 shadow-2xl">
             <div class="text-center space-y-3">
                 <div
@@ -120,27 +143,108 @@
                 <h2 id="login-title" class="text-2xl font-bold text-white tracking-tight">Acceso Profesional</h2>
                 <p id="login-subtitle" class="text-slate-400 text-sm">Session AI - Ingresa tus credenciales</p>
             </div>
+
             <div class="space-y-4">
-                <div>
-                    <label class="text-[10px] font-bold text-slate-500 uppercase ml-1">Usuario</label>
-                    <input type="text" id="login-username" class="w-full p-3 rounded-xl mt-1 text-sm"
-                        placeholder="Psicólogo">
-                </div>
-                <div>
-                    <label class="text-[10px] font-bold text-slate-500 uppercase ml-1">Contraseña</label>
-                    <input type="password" id="login-password" class="w-full p-3 rounded-xl mt-1 text-sm"
-                        placeholder="••••••••">
-                </div>
+                <input type="text" id="login-username" class="w-full p-3 rounded-xl mt-1 text-sm bg-transparent"
+                    placeholder="Usuario" autocomplete="off" name="session_ai_user_xyz">
+                <input type="password" id="login-password" class="w-full p-3 rounded-xl mt-1 text-sm bg-transparent"
+                    placeholder="Contraseña" autocomplete="off" name="session_ai_pwd_xyz">
+
                 <button id="login-btn" onclick="handleAuthAction()"
-                    class="w-full bg-indigo-600 hover:bg-indigo-700 text-white font-bold py-3.5 rounded-xl transition-all shadow-lg shadow-indigo-500/20 active:scale-95">CONTINUAR</button>
+                    class="w-full bg-indigo-600 hover:bg-indigo-700 text-white font-bold py-3.5 rounded-xl transition-all shadow-lg active:scale-95">
+                    INICIAR SESIÓN
+                </button>
             </div>
-            <p id="login-error"
-                class="text-rose-400 text-[10px] text-center font-bold hidden uppercase tracking-widest">Error al
-                iniciar sesión</p>
+
+            <div class="text-center space-y-2">
+                <p id="login-error"
+                    class="text-rose-400 text-xs font-bold hidden uppercase tracking-widest animate-pulse">
+                    Error de credenciales
+                </p>
+                <div id="login-links">
+                    <button onclick="toggleRecoveryMode()"
+                        class="text-xs text-indigo-400 hover:text-indigo-300 transition-colors mt-2">
+                        ¿Olvidaste tu contraseña?
+                    </button>
+                </div>
+            </div>
         </div>
+
+        <!-- 2. Secure Backup Code Card (Only shown after Register) -->
+        <div id="backup-card"
+            class="custom-card w-full max-w-md p-8 space-y-6 hidden border-emerald-500/20 shadow-emerald-900/20">
+            <div class="text-center space-y-2">
+                <div
+                    class="bg-emerald-500/10 text-emerald-400 w-12 h-12 rounded-full flex items-center justify-center mx-auto mb-2">
+                    <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                            d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z">
+                        </path>
+                    </svg>
+                </div>
+                <h3 class="text-xl font-bold text-white uppercase tracking-wider text-emerald-400">Seguridad Crítica
+                </h3>
+                <p class="text-sm text-slate-400 leading-relaxed">
+                    Tus datos están encriptados. Si olvidas tu contraseña, <br>
+                    <span class="text-white font-bold">solo este código podrá restaurar tu acceso.</span>
+                </p>
+            </div>
+
+            <div class="bg-black/40 p-6 rounded-xl border border-slate-700 text-center relative group">
+                <code id="display-backup-code"
+                    class="text-2xl font-mono text-emerald-400 tracking-wider">XXXX-XXXX-XXXX-XXXX</code>
+                <button onclick="copyToClipboard()" class="absolute top-2 right-2 text-slate-500 hover:text-white p-2">
+                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                            d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z">
+                        </path>
+                    </svg>
+                </button>
+            </div>
+
+            <div class="flex items-start gap-3 p-3 bg-rose-500/10 rounded-lg border border-rose-500/20">
+                <input type="checkbox" id="backup-confirm" class="mt-1 accent-rose-500">
+                <label for="backup-confirm" class="text-xs text-rose-200 cursor-pointer select-none">
+                    Entiendo que si pierdo este código y mi contraseña, perderé acceso a todos mis registros de
+                    pacientes permanentemente.
+                </label>
+            </div>
+
+            <button id="backup-continue-btn" onclick="finishBackupProcess()" disabled
+                class="w-full bg-slate-700 text-slate-400 font-bold py-3 rounded-xl transition-all cursor-not-allowed">
+                Entendido, Iniciar Sistema
+            </button>
+        </div>
+
+        <!-- 3. Recovery Mode Card -->
+        <div id="recovery-card" class="custom-card w-full max-w-sm p-8 space-y-6 hidden border-indigo-500/20">
+            <div class="flex items-center gap-3 mb-2">
+                <button onclick="toggleRecoveryMode()" class="text-slate-500 hover:text-white">← Volver</button>
+                <h3 class="text-lg font-bold text-white">Recuperar Acceso</h3>
+            </div>
+
+            <p class="text-xs text-slate-400">Usa tu código maestro para restablecer tu contraseña.</p>
+
+            <div class="space-y-4">
+                <input type="text" id="rec-username" class="w-full p-3 rounded-xl text-sm" placeholder="Tu Usuario"
+                    autocomplete="off">
+                <input type="text" id="rec-code"
+                    class="w-full p-3 rounded-xl text-sm font-mono text-center tracking-widest uppercase border-emerald-900/50 focus:border-emerald-500"
+                    placeholder="XXXX-XXXX-XXXX-XXXX" autocomplete="off">
+                <input type="password" id="rec-new-password" class="w-full p-3 rounded-xl text-sm"
+                    placeholder="Nueva Contraseña" autocomplete="off">
+
+                <button onclick="handleRecovery()"
+                    class="w-full bg-emerald-600 hover:bg-emerald-700 text-white font-bold py-3 rounded-xl transition-all shadow-lg">
+                    RESTAURAR CONTRASEÑA
+                </button>
+            </div>
+            <p id="rec-error" class="text-rose-400 text-xs text-center font-bold hidden uppercase">Código Inválido</p>
+        </div>
+
     </div>
 
-    <!-- Navbar -->
+    <!-- MAIN APP UI (Navbar, Sidebar, Content) -->
     <header
         class="h-16 border-b border-border flex items-center justify-between px-8 bg-slate-900/50 backdrop-blur-md z-10">
         <div class="flex items-center gap-3 cursor-pointer" onclick="goToHome()">
@@ -151,11 +255,8 @@
                     </path>
                 </svg>
             </div>
-            <h1 class="text-xl font-bold tracking-tight">
-                Session <span class="text-indigo-400 font-light">AI</span>
-            </h1>
+            <h1 class="text-xl font-bold tracking-tight">Session <span class="text-indigo-400 font-light">AI</span></h1>
         </div>
-
         <div class="flex items-center gap-4">
             <div
                 class="flex items-center gap-2 bg-slate-800/50 px-4 py-1.5 rounded-full border border-border text-xs font-semibold select-none">
@@ -163,16 +264,13 @@
                 <span id="status-text">Verificando...</span>
             </div>
             <button onclick="handleLogout()" id="logout-btn"
-                class="hidden text-slate-500 hover:text-rose-400 text-xs font-bold transition-colors">
-                Cerrar Sesión
-            </button>
+                class="hidden text-slate-500 hover:text-rose-400 text-xs font-bold transition-colors">Cerrar
+                Sesión</button>
         </div>
     </header>
 
     <div class="flex flex-1 overflow-hidden">
-        <!-- Sidebar -->
         <aside class="w-80 border-r border-border flex flex-col bg-slate-900/20">
-            <!-- Search & Add -->
             <div class="p-6 space-y-4 border-b border-border">
                 <div class="relative">
                     <input type="text" id="patient-search" oninput="filterPatients()" placeholder="Buscar paciente..."
@@ -184,22 +282,15 @@
                     </svg>
                 </div>
                 <button onclick="showNewPatientModal()"
-                    class="w-full bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-bold py-2.5 rounded-xl transition-all flex items-center justify-center gap-2">
-                    <span>+ Nuevo Paciente</span>
-                </button>
+                    class="w-full bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-bold py-2.5 rounded-xl transition-all flex items-center justify-center gap-2"><span>+
+                        Nuevo Paciente</span></button>
             </div>
-
-            <!-- Patient List -->
             <div class="flex-1 overflow-y-auto px-4 py-4 space-y-2" id="patient-list">
-                <!-- Patients go here -->
                 <div class="text-center py-10 text-slate-500 text-sm">Cargando pacientes...</div>
             </div>
         </aside>
 
-        <!-- Main Content -->
         <main class="flex-1 flex flex-col relative overflow-hidden" id="main-area">
-
-            <!-- Introductory View (Default) -->
             <div id="intro-view"
                 class="absolute inset-0 flex flex-col items-center justify-center space-y-6 empty-state animate-in fade-in duration-700">
                 <div class="bg-indigo-900/20 p-8 rounded-full border border-indigo-500/10">
@@ -216,11 +307,8 @@
                 </div>
             </div>
 
-            <!-- Patient Detail View (Hidden by default) -->
             <div id="patient-view"
                 class="hidden absolute inset-0 flex flex-col p-10 overflow-y-auto space-y-8 animate-in slide-in-from-right-4 duration-500">
-
-                <!-- Patient Header -->
                 <div class="flex justify-between items-end border-b border-border pb-6">
                     <div class="space-y-1">
                         <h2 id="active-patient-name" class="text-3xl font-bold text-white tracking-tight">Paciente
@@ -237,9 +325,7 @@
                     </div>
                 </div>
 
-                <!-- Action Cards -->
                 <div class="grid grid-cols-2 gap-8">
-                    <!-- Upload -->
                     <div class="custom-card p-6 border-dashed border-2 border-indigo-500/20 hover:border-indigo-500/40 transition-all group flex flex-col items-center justify-center space-y-4 py-12 cursor-pointer"
                         onclick="document.getElementById('audio-input').click()">
                         <div class="bg-indigo-600/10 p-4 rounded-2xl group-hover:scale-110 transition-transform">
@@ -256,7 +342,6 @@
                         <input type="file" id="audio-input" class="hidden" accept="audio/*">
                     </div>
 
-                    <!-- Record -->
                     <div id="record-card"
                         class="custom-card p-6 border-dashed border-2 border-rose-500/20 hover:border-rose-500/40 transition-all group flex flex-col items-center justify-center space-y-4 py-12 cursor-pointer"
                         onclick="toggleRecording()">
@@ -275,7 +360,6 @@
                     </div>
                 </div>
 
-                <!-- Sessions List -->
                 <div class="space-y-4">
                     <div class="flex items-center justify-between">
                         <h3 class="text-lg font-bold text-white flex items-center gap-2">
@@ -284,11 +368,9 @@
                                 class="bg-slate-800 text-slate-400 px-2 py-0.5 rounded-lg text-[10px]">0</span>
                         </h3>
                         <button onclick="loadSessions(selectedPatientId)"
-                            class="text-indigo-400 hover:text-indigo-300 text-xs font-semibold">
-                            Actualizar Historial ↺
-                        </button>
+                            class="text-indigo-400 hover:text-indigo-300 text-xs font-semibold">Actualizar Historial
+                            ↺</button>
                     </div>
-
                     <div class="custom-card overflow-hidden">
                         <table class="w-full text-left">
                             <thead class="bg-slate-800/50 text-slate-500 text-[10px] uppercase tracking-widest">
@@ -299,79 +381,57 @@
                                     <th class="px-6 py-4 text-right">Acciones</th>
                                 </tr>
                             </thead>
-                            <tbody id="session-table-body" class="divide-y divide-slate-800">
-                                <!-- Sessions load here -->
-                            </tbody>
+                            <tbody id="session-table-body" class="divide-y divide-slate-800"></tbody>
                         </table>
                     </div>
                 </div>
-
             </div>
         </main>
     </div>
 
-    <!-- Footer Area -->
+    <!-- Modals (Confirmation, New Patient, Session Detail) - Kept mostly same -->
     <footer
         class="h-8 border-t border-border flex items-center justify-between px-8 bg-slate-900/80 backdrop-blur-md text-[10px] text-slate-500 shrink-0 z-20">
         <div class="flex items-center gap-4">
             <span>&copy; 2026 Session AI. Todos los derechos reservados.</span>
-            <span class="w-1 h-1 rounded-full bg-slate-700"></span>
-            <span class="italic">Privacidad y Ética Profesional Garantizada</span>
         </div>
         <div class="flex items-center gap-2">
-            <span>Software desarrollado por</span>
-            <span class="text-indigo-400 font-bold tracking-wider">ALCHEMY LAB</span>
-            <div class="w-1.5 h-1.5 rounded-full bg-indigo-500/50 animate-pulse"></div>
+            <span>Software desarrollado por</span><span class="text-indigo-400 font-bold tracking-wider">ALCHEMY
+                LAB</span>
         </div>
     </footer>
 
-    <!-- Confirmation Modal before processing -->
+    <!-- Confirm Modal -->
     <div id="confirm-modal"
         class="hidden fixed inset-0 bg-slate-950/80 backdrop-blur-md z-[60] flex items-center justify-center p-4">
         <div class="custom-card w-full max-w-sm p-8 space-y-6 animate-in zoom-in-95 duration-200 border-indigo-500/30">
-            <div class="text-center space-y-2">
-                <div
-                    class="bg-indigo-600/10 w-16 h-16 rounded-full flex items-center justify-center mx-auto mb-4 border border-indigo-500/20">
-                    <svg class="w-8 h-8 text-indigo-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
-                            d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"></path>
-                    </svg>
-                </div>
-                <h3 class="text-xl font-bold text-white">¿Procesar Audio?</h3>
-                <p class="text-slate-400 text-sm">Se iniciará la transcripción y el análisis con el modelo <span
-                        id="confirm-model-name" class="text-indigo-400 font-bold">...</span></p>
-            </div>
+            <h3 class="text-xl font-bold text-white text-center">¿Procesar Audio?</h3>
             <div class="flex gap-3 pt-4">
                 <button onclick="cancelUpload()"
-                    class="flex-1 py-3 rounded-xl bg-slate-800 text-slate-300 font-bold hover:bg-slate-700 transition-colors">Cancelar</button>
+                    class="flex-1 py-3 rounded-xl bg-slate-800 text-slate-300 font-bold hover:bg-slate-700">Cancelar</button>
                 <button onclick="confirmUpload()"
-                    class="flex-1 py-3 rounded-xl bg-indigo-600 text-white font-bold hover:bg-indigo-700 transition-colors shadow-lg">Confirmar</button>
+                    class="flex-1 py-3 rounded-xl bg-indigo-600 text-white font-bold hover:bg-indigo-700 shadow-lg">Confirmar</button>
             </div>
         </div>
     </div>
 
-    <!-- Modals -->
     <!-- New Patient Modal -->
     <div id="new-patient-modal"
         class="hidden fixed inset-0 bg-slate-950/80 backdrop-blur-md z-50 flex items-center justify-center p-4">
         <div class="custom-card w-full max-w-md p-8 space-y-6 animate-in zoom-in-95 duration-200">
             <h3 class="text-xl font-bold text-white">Registrar Nuevo Paciente</h3>
-            <div class="space-y-2">
-                <label class="text-xs font-bold text-slate-500 uppercase">Nombre Completo</label>
-                <input type="text" id="patient-name-input"
-                    class="w-full p-3 rounded-xl focus:ring-2 focus:ring-indigo-500" placeholder="Ej: Juan Pérez">
-            </div>
+            <input type="text" id="patient-name-input" class="w-full p-3 rounded-xl focus:ring-2 focus:ring-indigo-500"
+                placeholder="Ej: Juan Pérez">
             <div class="flex gap-3 pt-4">
                 <button onclick="hideNewPatientModal()"
-                    class="flex-1 py-3 rounded-xl bg-slate-800 text-slate-300 font-bold hover:bg-slate-700 transition-colors">Cancelar</button>
+                    class="flex-1 py-3 rounded-xl bg-slate-800 text-slate-300 font-bold">Cancelar</button>
                 <button onclick="createPatient()"
-                    class="flex-1 py-3 rounded-xl bg-indigo-600 text-white font-bold hover:bg-indigo-700 transition-colors shadow-lg">Crear
-                    Registro</button>
+                    class="flex-1 py-3 rounded-xl bg-indigo-600 text-white font-bold">Crear Registro</button>
             </div>
         </div>
     </div>
 
-    <!-- Session Detail Modal (Text Area) -->
+    <!-- Session Detail Modal -->
     <div id="session-modal"
         class="fixed inset-0 bg-slate-950/90 backdrop-blur-xl hidden flex items-center justify-center p-6 z-50">
         <div
@@ -384,57 +444,54 @@
                             class="hidden text-[10px] bg-indigo-900/50 border border-indigo-700 px-2 py-0.5 rounded-full text-indigo-300 font-mono"></span>
                     </div>
                     <span id="session-date-display" class="text-xs text-slate-500 mt-1">Fecha: --/--/----</span>
-                    <div id="audio-container"
-                        class="mt-4 flex items-center gap-4 bg-slate-950/30 p-2 rounded-xl border border-indigo-500/10">
-                        <button id="play-btn"
-                            class="bg-indigo-600 hover:bg-indigo-700 p-2 rounded-lg transition-all active:scale-90">
-                            <svg class="w-4 h-4 text-white" fill="currentColor" viewBox="0 0 24 24">
-                                <path d="M8 5v14l11-7z" />
-                            </svg>
-                        </button>
-                        <audio id="modal-audio-player" class="h-8 filter invert opacity-60"></audio>
-                        <span class="text-[9px] font-bold text-indigo-500/60 uppercase tracking-widest">Canal
-                            Cifrado</span>
-                    </div>
                 </div>
                 <button onclick="closeModal()"
-                    class="w-8 h-8 rounded-full flex items-center justify-center text-slate-400 hover:bg-slate-800 hover:text-white transition-all">✕</button>
+                    class="w-8 h-8 rounded-full flex items-center justify-center text-slate-400 hover:bg-slate-800">✕</button>
             </div>
-
             <div class="flex-1 flex overflow-hidden">
-                <!-- Transcript Column -->
                 <div class="w-2/5 p-8 border-r border-border flex flex-col">
-                    <h4 class="text-[10px] font-bold text-slate-500 uppercase mb-4 tracking-widest">Transcripción de
-                        Audio</h4>
+                    <div class="flex items-center justify-between mb-4">
+                        <h4 class="text-[10px] font-bold text-slate-500 uppercase tracking-widest">Transcripción</h4>
+
+                        <!-- Moved Audio Player -->
+                        <div id="audio-container" class="flex items-center gap-2">
+                            <!-- Will be populated dynamically if audio exists -->
+                            <button id="play-btn"
+                                class="bg-indigo-600 hover:bg-indigo-500 p-1.5 rounded-lg transition-colors group">
+                                <svg class="w-3 h-3 text-white group-hover:scale-110 transition-transform"
+                                    viewBox="0 0 24 24">
+                                    <path d="M8 5v14l11-7z" fill="currentColor" />
+                                </svg>
+                            </button>
+                            <span class="text-[9px] text-slate-500 font-mono">ENCRIPTADO</span>
+                        </div>
+                    </div>
+
                     <div id="modal-transcript"
-                        class="flex-1 bg-slate-950/50 p-6 rounded-2xl overflow-y-auto text-xs text-slate-400 leading-relaxed border border-slate-800/50 whitespace-pre-wrap italic italic_scrollbar">
-                        Procesando...
+                        class="flex-1 bg-slate-950/50 p-6 rounded-2xl overflow-y-auto text-xs text-slate-400 leading-relaxed border border-slate-800/50 whitespace-pre-wrap italic">
                     </div>
                 </div>
-
-                <!-- Narrative Column -->
                 <div class="flex-1 p-8 flex flex-col bg-slate-900/40">
                     <div class="flex items-center justify-between mb-4">
-                        <h4 class="text-[10px] font-bold text-indigo-400 uppercase tracking-widest">Resumen Clínico
-                            Inteligente</h4>
-                        <span class="text-[10px] text-slate-500 italic">IA Generada</span>
+                        <h4 class="text-[10px] font-bold text-indigo-400 uppercase tracking-widest">Resumen Clínico</h4>
                     </div>
                     <textarea id="edit-nota-clinica"
-                        class="flex-1 w-full p-8 rounded-2xl border border-slate-700 bg-slate-950 text-slate-100 text-sm leading-8 focus:ring-0 focus:border-indigo-500 resize-none shadow-inner"
-                        placeholder="La IA está analizando la sesión psicológicamente..."></textarea>
+                        class="flex-1 w-full p-8 rounded-2xl border border-slate-700 bg-slate-950 text-slate-100 text-sm leading-8 resize-none shadow-inner focus:ring-1 focus:ring-indigo-500/50 outline-none transition-all"></textarea>
                 </div>
             </div>
-
             <div class="p-6 bg-slate-900 border-t border-border flex justify-end gap-4 shrink-0 px-8">
                 <button onclick="closeModal()"
-                    class="px-6 py-2.5 rounded-xl text-slate-400 hover:bg-slate-800 transition-all font-bold text-sm">Cerrar</button>
+                    class="px-6 py-2.5 rounded-xl text-slate-400 hover:bg-slate-800 font-bold text-sm">Cerrar</button>
                 <button id="save-btn"
-                    class="bg-indigo-600 hover:bg-indigo-700 text-white px-8 py-2.5 rounded-xl font-bold shadow-lg transition-all active:scale-95 text-sm">
+                    class="bg-indigo-600 hover:bg-indigo-700 text-white px-8 py-2.5 rounded-xl font-bold shadow-lg text-sm bg-gradient-to-r from-indigo-600 to-indigo-500">
                     Guardar Evolución
                 </button>
             </div>
         </div>
     </div>
+
+    <!-- Hidden audio element for modal -->
+    <audio id="modal-audio-player" class="hidden"></audio>
 
     <script src="app.js"></script>
 </body>
