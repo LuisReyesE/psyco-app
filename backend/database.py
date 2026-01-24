@@ -62,6 +62,7 @@ class Session(Base):
     audio_path = Column(String)
     transcription_raw = Column(Text, nullable=True)
     structured_json = Column(JSON, nullable=True)
+    anonymization_map = Column(JSON, nullable=True)  # Secret map for Gemini deanonymization
     status = Column(String, default="pending") # pending, processing, completed, error
     created_at = Column(DateTime, default=datetime.datetime.now)
 

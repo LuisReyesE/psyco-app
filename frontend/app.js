@@ -526,14 +526,39 @@ async function loadModels() {
         const models = await res.json();
         const select = document.getElementById('model-select');
         select.innerHTML = '<option value="">Automático (Gemma 3)</option>';
-        models.forEach(m => {
-            const opt = document.createElement('option');
-            opt.value = m;
-            const displayName = m.replace('ollama:', '');
-            opt.innerText = displayName;
-            if (displayName.toLowerCase().includes('gemma3')) opt.selected = true;
-            select.appendChild(opt);
-        });
+
+        // Separate models by provider
+        const ollamaModels = models.filter(m => m.startsWith('ollama:'));
+        const geminiModels = models.filter(m => m.startsWith('gemini:'));
+
+        // Add Ollama models (local)
+        if (ollamaModels.length > 0) {
+            const ollamaGroup = document.createElement('optgroup');
+            ollamaGroup.label = '🖥️ Local (Ollama)';
+            ollamaModels.forEach(m => {
+                const opt = document.createElement('option');
+                opt.value = m;
+                const displayName = m.replace('ollama:', '');
+                opt.innerText = displayName;
+                if (displayName.toLowerCase().includes('gemma3')) opt.selected = true;
+                ollamaGroup.appendChild(opt);
+            });
+            select.appendChild(ollamaGroup);
+        }
+
+        // Add Gemini models (cloud with anonymization)
+        if (geminiModels.length > 0) {
+            const geminiGroup = document.createElement('optgroup');
+            geminiGroup.label = '☁️ Nube (Gemini + Anonimización)';
+            geminiModels.forEach(m => {
+                const opt = document.createElement('option');
+                opt.value = m;
+                const displayName = m.replace('gemini:', '');
+                opt.innerText = `🔒 ${displayName}`;
+                geminiGroup.appendChild(opt);
+            });
+            select.appendChild(geminiGroup);
+        }
     } catch (e) { }
 }
 

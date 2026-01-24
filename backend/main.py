@@ -421,24 +421,31 @@ def get_audio_stream(session_id: int, token: str, db: Session = Depends(get_db))
 
 @app.get("/models/")
 def list_models():
-    """List available Ollama models"""
+    """List available AI models (Ollama + Gemini if configured)"""
+    models = []
+    
+    # 1. Add Ollama models (local)
     try:
         raw_models = import_ollama_list()
-        models = []
         for m in raw_models:
             # Handle object vs dict
             if hasattr(m, 'model'):
-                models.append(m.model)
+                name = m.model
             elif isinstance(m, dict):
-                # Try 'model' then 'name'
-                models.append(m.get('model', m.get('name', 'unknown')))
+                name = m.get('model', m.get('name', 'unknown'))
             else:
-                # Fallback print to debug
-                print(f"Unknown model type: {type(m)}")
-        return models
+                continue
+            # Prefix with ollama: for router identification
+            models.append(f"ollama:{name}")
     except Exception as e:
         print(f"Error loading models from Ollama: {e}")
-        return []
+    
+    # 2. Add Gemini models (cloud, if API key configured)
+    gemini_api_key = os.getenv('GEMINI_API_KEY')
+    if gemini_api_key and gemini_api_key != 'your_api_key_here':
+        models.append("gemini:gemini-3-flash-preview")
+    
+    return models
 
 def import_ollama_list():
     import ollama

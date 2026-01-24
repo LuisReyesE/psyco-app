@@ -12,6 +12,17 @@ from backend.database import SessionLocal, Session as DBSession
 from backend.security import encrypt_data, encrypt_file
 from backend.config import FFMPEG_DIR
 
+# Lazy import for anonymizer (only loaded when Gemini is used)
+_anonymizer_module = None
+
+def get_anonymizer():
+    """Lazy load anonymizer module to avoid loading spaCy unless needed"""
+    global _anonymizer_module
+    if _anonymizer_module is None:
+        from backend import anonymizer
+        _anonymizer_module = anonymizer
+    return _anonymizer_module
+
 # Singleton for the processor manager
 class AudioProcessorManager:
     _instance = None
@@ -131,6 +142,89 @@ class AudioProcessorManager:
             print(f"Error en pre-procesamiento FFmpeg: {e}")
             return input_path # Fallback al original si falla la conversión
 
+    def _process_with_ollama(self, transcript: str, model_name: str, transcribe_duration: float) -> dict:
+        """
+        Process transcript with local Ollama model.
+        No anonymization needed - all data stays local.
+        """
+        system_prompt = (
+            "Eres un asistente psicológico experto. Tu tarea es redactar una nota de evolución clínica en un ÚNICO PÁRRAFO de PROSA CONTINUA.\n"
+            "ES MUY IMPORTANTE: NO uses formato JSON dentro del texto. NO uses llaves {}, ni corchetes, ni comillas innecesarias.\n"
+            "Debes responder EXCLUSIVAMENTE con un objeto JSON válido con esta única clave:\n"
+            '{"nota_clinica": "El texto del párrafo aquí..."}'
+        )
+        
+        user_prompt = f"Conversación clínica:\n\n{transcript}"
+        
+        try:
+            start_gen = time.time()
+            response = ollama.generate(
+                model=model_name, 
+                system=system_prompt, 
+                prompt=user_prompt, 
+                format='json', 
+                options={'temperature': 0.1}
+            )
+            gen_duration = round(time.time() - start_gen, 2)
+            
+            response_text = response.get('response', '')
+            try:
+                # Clean markdown code blocks
+                clean_text = re.sub(r'```(?:json)?\s*', '', response_text).replace('```', '').strip()
+                data = json.loads(clean_text)
+                
+                # Add metrics
+                data["_metrics"] = {
+                    "transcription_time": transcribe_duration,
+                    "generation_time": gen_duration,
+                    "total_time": round(transcribe_duration + gen_duration, 2),
+                    "device": self.device
+                }
+                data["_model_file"] = model_name
+                data["_provider"] = "ollama"
+                return data
+                
+            except Exception as e:
+                print(f"JSON Parse failed: {e}. Falling back to raw text.")
+                return {
+                    "nota_clinica": response_text, 
+                    "_warning": "Formato no estructurado (JSON fallido)",
+                    "_raw": response_text,
+                    "_provider": "ollama"
+                }
+        except Exception as e:
+            return {"error": f"Ollama Error: {str(e)}"}
+
+    def _process_with_gemini(self, transcript: str, patient_name: str, transcribe_duration: float) -> tuple:
+        """
+        Process transcript with Gemini API (cloud).
+        Uses anonymization to protect sensitive data before sending to cloud.
+        
+        Returns:
+            tuple: (final_json, secret_map)
+        """
+        try:
+            anonymizer = get_anonymizer()
+            result, secret_map = anonymizer.process_with_gemini(transcript, patient_name)
+            
+            # Add transcription metrics
+            if '_generation_time' in result:
+                gen_duration = result.pop('_generation_time')
+                result["_metrics"] = {
+                    "transcription_time": transcribe_duration,
+                    "generation_time": gen_duration,
+                    "total_time": round(transcribe_duration + gen_duration, 2),
+                    "device": self.device
+                }
+            
+            result["_model_file"] = "gemini-3-flash-preview"
+            return result, secret_map
+            
+        except Exception as e:
+            import traceback
+            print(f"Gemini processing error: {traceback.format_exc()}")
+            return {"error": f"Gemini Error: {str(e)}"}, {}
+
     def _process_single_task(self, session_id: int, selected_model: str = None, encryption_key: bytes = None):
         """Main processing logic for a single session"""
         db = SessionLocal()
@@ -185,53 +279,29 @@ class AudioProcessorManager:
             if len(transcript_text) > MAX_CHARS:
                 safe_transcript = transcript_text[:MAX_CHARS] + "\n[...]"
 
-            model_name = selected_model.replace("ollama:", "") if selected_model else "gemma3:4b"
             patient_name = session_record.patient.full_name if (session_record.patient and session_record.patient.full_name) else "Paciente"
             
-            system_prompt = (
-                "Eres un asistente psicológico experto. Tu tarea es redactar una nota de evolución clínica en un ÚNICO PÁRRAFO de PROSA CONTINUA.\n"
-                "ES MUY IMPORTANTE: NO uses formato JSON dentro del texto. NO uses llaves {}, ni corchetes, ni comillas innecesarias.\n"
-                "Debes responder EXCLUSIVAMENTE con un objeto JSON válido con esta única clave:\n"
-                '{"nota_clinica": "El texto del párrafo aquí..."}'
-            )
-            
-            user_prompt = f"Conversación clínica:\n\n{safe_transcript}"
-            
+            # Determine AI provider and model
             final_json = {}
-            try:
-                start_gen = time.time()
-                response = ollama.generate(model=model_name, system=system_prompt, prompt=user_prompt, format='json', options={'temperature': 0.1})
-                gen_duration = round(time.time() - start_gen, 2)
-                
-                response_text = response.get('response', '')
-                try:
-                    # Robust parsing strategy
-                    # 1. Clean markdown code blocks (```json ... ```)
-                    clean_text = re.sub(r'```(?:json)?\s*', '', response_text).replace('```', '').strip()
-                    
-                    # 2. Try strict JSON parse
-                    data = json.loads(clean_text)
-                    
-                    # 3. Add metrics
-                    data["_metrics"] = {
-                        "transcription_time": transcribe_duration,
-                        "generation_time": gen_duration,
-                        "total_time": round(transcribe_duration + gen_duration, 2),
-                        "device": self.device
-                    }
-                    data["_model_file"] = model_name
-                    final_json = data
-                except Exception as e:
-                    # 4. FALLBACK: If JSON fails, treat the entire text as the note.
-                    # This fixes the "Error formateando respuesta" issue when models are chatty.
-                    print(f"JSON Parse failed: {e}. Falling back to raw text.")
-                    final_json = {
-                        "nota_clinica": response_text, 
-                        "_warning": "Formato no estructurado (JSON fallido)",
-                        "_raw": response_text
-                    }
-            except Exception as e:
-                final_json = {"error": f"Ollama Error: {str(e)}"}
+            secret_map = None
+            
+            if selected_model and selected_model.startswith("gemini:"):
+                # === GEMINI FLOW (with anonymization) ===
+                print(f"--- [Session {session_id}] Using Gemini (anonymized) ---")
+                final_json, secret_map = self._process_with_gemini(
+                    safe_transcript, patient_name, transcribe_duration
+                )
+            else:
+                # === OLLAMA FLOW (local, no anonymization) ===
+                model_name = selected_model.replace("ollama:", "") if selected_model else "gemma3:4b"
+                print(f"--- [Session {session_id}] Using Ollama: {model_name} ---")
+                final_json = self._process_with_ollama(
+                    safe_transcript, model_name, transcribe_duration
+                )
+            
+            # Store anonymization map if used
+            if secret_map:
+                session_record.anonymization_map = secret_map
 
             # 3. ENCRYPTION & CLEANUP PHASE
             print(f"--- [Session {session_id}] Phase: Securing ---")
