@@ -20,12 +20,22 @@ pnpm-workspace.yaml
 # Binaries/Tools
 ffmpeg-tools/
 
-# Data/Logs
+# Data/Database - SENSITIVE
 data/
-*.log
 *.db
+*.db-shm
+*.db-wal
 *.sqlite3
+
+# Uploads - SENSITIVE (audio files, encrypted data)
+uploads/
+data/uploads/
+
+# Logs
+*.log
 server.log.old
+
+# Scripts locales
 Session_AI.bat
 Session_AI.vbs
 
@@ -38,3 +48,7 @@ Session_AI.vbs
 Thumbs.db
 Desktop.ini
 .DS_Store
+
+# Agent/AI tools
+.gemini/
+.agent/

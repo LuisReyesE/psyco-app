@@ -1,5 +1,5 @@
 import datetime
-from sqlalchemy import create_engine, Column, Integer, String, Text, ForeignKey, JSON, DateTime
+from sqlalchemy import create_engine, Column, Integer, String, Text, ForeignKey, JSON, DateTime, Boolean
 from sqlalchemy.orm import sessionmaker, relationship
 from sqlalchemy.ext.declarative import declarative_base
 from backend.config import DB_PATH
@@ -65,5 +65,11 @@ class Session(Base):
     anonymization_map = Column(JSON, nullable=True)  # Secret map for Gemini deanonymization
     status = Column(String, default="pending") # pending, processing, completed, error
     created_at = Column(DateTime, default=datetime.datetime.now)
+    
+    # Chunked recording support (real-time recording)
+    is_chunked = Column(Boolean, default=False)
+    chunks_total = Column(Integer, default=0)
+    chunks_transcribed = Column(Integer, default=0)
+    partial_transcription = Column(Text, default="")  # For live UI updates
 
     patient = relationship("Patient", back_populates="sessions")

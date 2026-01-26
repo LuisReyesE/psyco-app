@@ -245,6 +245,211 @@ async def upload_audio(
     processor_manager.enqueue_task(new_session.id, model, encryption_key=key)
     return {"status": "queued", "session_id": new_session.id}
 
+# -------------------------------------------------------------------
+# REAL-TIME STREAMING RECORDING (Parallel Transcription)
+# -------------------------------------------------------------------
+
+@app.post("/recording/{patient_id}/start")
+async def start_recording_session(
+    patient_id: int,
+    token: str = Form(...),
+    model: str = Form(None),
+    db: Session = Depends(get_db)
+):
+    """
+    Start a new real-time recording session.
+    Returns session_id to use for streaming chunks.
+    """
+    key = ACTIVE_KEYS.get(token)
+    if not key:
+        raise HTTPException(status_code=401)
+    
+    # Create DB Record for streaming session
+    new_session = DBSession(
+        patient_id=patient_id,
+        audio_path="",  # Will be set when first chunk arrives
+        status="recording",  # New status for active recording
+        is_chunked=True,
+        chunks_total=0,
+        chunks_transcribed=0
+    )
+    db.add(new_session)
+    db.commit()
+    db.refresh(new_session)
+    
+    # Store model preference and encryption key for this session
+    ACTIVE_KEYS[f"session_{new_session.id}_model"] = model
+    ACTIVE_KEYS[f"session_{new_session.id}_key"] = key
+    
+    print(f"[STREAM] Started recording session {new_session.id} for patient {patient_id}")
+    
+    return {
+        "status": "recording",
+        "session_id": new_session.id
+    }
+
+@app.post("/recording/{session_id}/chunk")
+async def add_recording_chunk(
+    session_id: int,
+    token: str = Form(...),
+    chunk_index: int = Form(...),
+    chunk: UploadFile = File(...),
+    db: Session = Depends(get_db)
+):
+    """
+    Add a chunk to an active recording session.
+    Chunk is immediately queued for parallel transcription.
+    """
+    key = ACTIVE_KEYS.get(token)
+    if not key:
+        raise HTTPException(status_code=401)
+    
+    session = db.query(DBSession).filter(DBSession.id == session_id).first()
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+    
+    # Detect file extension
+    content_type = chunk.content_type or "audio/webm"
+    ext = "ogg" if "ogg" in content_type else "webm"
+    
+    # Save chunk to disk
+    timestamp = int(time.time())
+    filename = f"{session.patient_id}_{session_id}_chunk{chunk_index}_{timestamp}.{ext}"
+    file_path = os.path.join(UPLOAD_DIR, filename)
+    
+    with open(file_path, "wb") as buffer:
+        shutil.copyfileobj(chunk.file, buffer)
+    
+    # Update session chunk count
+    session.chunks_total = max(session.chunks_total, chunk_index + 1)
+    if not session.audio_path:
+        session.audio_path = file_path  # First chunk as reference
+    db.commit()
+    
+    # Get stored model and key for this session
+    model = ACTIVE_KEYS.get(f"session_{session_id}_model")
+    enc_key = ACTIVE_KEYS.get(f"session_{session_id}_key", key)
+    
+    # Immediately queue chunk for transcription
+    processor_manager.enqueue_single_chunk(session_id, chunk_index, file_path, enc_key)
+    
+    print(f"[CHUNK] Chunk {chunk_index} received for session {session_id} ({os.path.getsize(file_path)/1024:.1f} KB)")
+    
+    return {
+        "status": "received",
+        "chunk_index": chunk_index,
+        "session_id": session_id
+    }
+
+@app.post("/recording/{session_id}/finish")
+async def finish_recording_session(
+    session_id: int,
+    token: str = Form(...),
+    total_chunks: int = Form(...),
+    db: Session = Depends(get_db)
+):
+    """
+    Finish a recording session and trigger final processing (AI analysis).
+    """
+    key = ACTIVE_KEYS.get(token)
+    if not key:
+        raise HTTPException(status_code=401)
+    
+    session = db.query(DBSession).filter(DBSession.id == session_id).first()
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+    
+    # Update final chunk count
+    session.chunks_total = total_chunks
+    session.status = "transcribing"  # Move from 'recording' to 'transcribing'
+    db.commit()
+    
+    # Get stored model and key
+    model = ACTIVE_KEYS.get(f"session_{session_id}_model")
+    enc_key = ACTIVE_KEYS.get(f"session_{session_id}_key", key)
+    
+    # Queue final processing (wait for transcriptions, then analyze)
+    processor_manager.enqueue_finish_session(session_id, total_chunks, model, enc_key)
+    
+    # Cleanup session-specific keys
+    ACTIVE_KEYS.pop(f"session_{session_id}_model", None)
+    ACTIVE_KEYS.pop(f"session_{session_id}_key", None)
+    
+    print(f"[FINISH] Recording session {session_id} finished with {total_chunks} chunks")
+    
+    return {
+        "status": "finishing",
+        "session_id": session_id,
+        "total_chunks": total_chunks
+    }
+
+# Legacy chunked upload (all chunks at once - kept for compatibility)
+@app.post("/upload/{patient_id}/chunked")
+async def upload_audio_chunked(
+    patient_id: int,
+    token: str = Form(...),
+    chunks: list[UploadFile] = File(...),
+    model: str = Form(None),
+    db: Session = Depends(get_db)
+):
+    """
+    Upload multiple audio chunks from real-time recording.
+    Chunks are processed in parallel for faster transcription.
+    """
+    key = ACTIVE_KEYS.get(token)
+    if not key: 
+        raise HTTPException(status_code=401)
+    
+    if not chunks or len(chunks) == 0:
+        raise HTTPException(status_code=400, detail="No chunks provided")
+    
+    # Save each chunk to disk
+    chunk_paths = []
+    timestamp = int(time.time())
+    
+    for i, chunk in enumerate(chunks):
+        # Detect actual file extension from content type or filename
+        content_type = chunk.content_type or "audio/webm"
+        if "ogg" in content_type:
+            ext = "ogg"
+        else:
+            ext = "webm"  # Default to webm since browsers usually send this
+        
+        filename = f"{patient_id}_{timestamp}_chunk{i}.{ext}"
+        file_path = os.path.join(UPLOAD_DIR, filename)
+        
+        with open(file_path, "wb") as buffer:
+            shutil.copyfileobj(chunk.file, buffer)
+        
+        chunk_paths.append(file_path)
+    
+    # Create DB Record (audio_path will be updated after merge)
+    new_session = DBSession(
+        patient_id=patient_id,
+        audio_path=chunk_paths[0],  # Temporary, will be replaced with merged file
+        status="queued",
+        is_chunked=True,
+        chunks_total=len(chunks),
+        chunks_transcribed=0
+    )
+    db.add(new_session)
+    db.commit()
+    db.refresh(new_session)
+    
+    # Enqueue Chunked Task
+    processor_manager.enqueue_chunked_task(
+        new_session.id, 
+        chunk_paths, 
+        model, 
+        encryption_key=key
+    )
+    
+    return {
+        "status": "queued", 
+        "session_id": new_session.id, 
+        "chunks_received": len(chunks)
+    }
+
 @app.get("/sessions/")
 def list_sessions(patient_id: int, token: str, db: Session = Depends(get_db)):
     key = ACTIVE_KEYS.get(token)
@@ -299,8 +504,16 @@ def get_session(session_id: int, token: str, db: Session = Depends(get_db)):
         "status": s.status,
         "created_at": s.created_at,
         "transcription_raw": s.transcription_raw,
-        "structured_json": s.structured_json
+        "structured_json": s.structured_json,
+        # Chunking info for UI
+        "is_chunked": s.is_chunked,
+        "chunks_total": s.chunks_total,
+        "chunks_transcribed": s.chunks_transcribed
     }
+    
+    # For chunked sessions in progress, show partial transcription
+    if s.is_chunked and s.status in ["transcribing", "queued"] and s.partial_transcription:
+        item["transcription_raw"] = s.partial_transcription
     
     if s.status == "completed":
         try:

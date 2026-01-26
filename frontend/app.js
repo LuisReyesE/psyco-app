@@ -8,6 +8,12 @@ let startTime;
 let allPatients = [];
 let pendingAudioFile = null;
 
+// Chunked recording support (real-time)
+let recordingChunks = [];  // Individual 30s chunks for parallel processing
+let recordingMimeType = '';
+let recordingExtension = '';
+let pendingChunks = null;  // Pending chunks for upload confirmation
+
 // Auth State - Usar localStorage para mayor persistencia en Edge
 let authToken = localStorage.getItem('psyco_token') || sessionStorage.getItem('psyco_token') || null;
 let isRegistered = false;
@@ -462,6 +468,23 @@ function renderSessionsTable(sessions) {
             if (struct._metrics) {
                 durationText = `<span class="text-xs text-slate-400">${formatDuration(struct._metrics.total_time)}</span>`;
             }
+        } else if (s.status === 'recording') {
+            // Verificar si es una sesión activa real o una huérfana
+            const ageMinutes = (Date.now() - new Date(s.created_at).getTime()) / 60000;
+
+            if (ageMinutes < 90) {  // 90 min = permite sesiones de hasta ~1 hora
+                // Sesión de streaming en vivo real - badge morado pulsante
+                statusMarkup = `<span class="bg-purple-500/30 text-purple-300 text-[9px] px-2 py-0.5 rounded-full font-bold border border-purple-500/40 animate-pulse">EN VIVO</span>`;
+                if (s.chunks_transcribed !== undefined && s.chunks_total !== undefined && s.chunks_total > 0) {
+                    durationText = `<span class="text-[10px] text-purple-400 italic">${s.chunks_transcribed}/${s.chunks_total} chunks</span>`;
+                } else {
+                    durationText = `<span class="text-[10px] text-purple-400 italic">Grabando...</span>`;
+                }
+            } else {
+                // Sesión huérfana (más de 30 min sin actividad) - badge gris
+                statusMarkup = `<span class="bg-slate-500/20 text-slate-400 text-[9px] px-2 py-0.5 rounded-full font-bold border border-slate-500/30">ABANDONADA</span>`;
+                durationText = `<span class="text-[10px] text-slate-500 italic">Sesión incompleta</span>`;
+            }
         } else if (['queued', 'transcribing', 'analyzing', 'securing'].includes(s.status)) {
             const colors = { queued: 'amber', transcribing: 'rose', analyzing: 'indigo', securing: 'emerald' };
             const text = { queued: 'EN COLA', transcribing: 'TRANSCRIBIENDO', analyzing: 'ANALIZANDO', securing: 'CIFRANDO' };
@@ -495,8 +518,8 @@ function renderSessionsTable(sessions) {
 }
 
 function checkForActiveProcessing(sessions) {
-    // Verificar si alguna sesión está en proceso
-    const processingStates = ['queued', 'transcribing', 'analyzing', 'securing'];
+    // Verificar si alguna sesión está en proceso (incluyendo grabación en vivo)
+    const processingStates = ['recording', 'queued', 'transcribing', 'analyzing', 'securing'];
     const isProcessing = sessions.some(s => processingStates.includes(s.status));
 
     // Log solo cuando cambia el estado
@@ -770,12 +793,43 @@ async function createPatient() {
     } catch (e) { }
 }
 
-// Recording & UI Helpers
+// Recording & UI Helpers - REAL-TIME STREAMING
+// Chunks are sent immediately to server for parallel transcription
+let chunkingInterval = null;
+let audioStream = null;
+let activeSessionId = null;  // Session ID for streaming
+let chunksSent = 0;
+
 async function toggleRecording() {
     if (!mediaRecorder || mediaRecorder.state === 'inactive') {
         try {
-            // Optimización de captura: 16kHz Mono
-            const stream = await navigator.mediaDevices.getUserMedia({
+            if (!selectedPatientId || !authToken) {
+                alert("Selecciona un paciente primero");
+                return;
+            }
+
+            // 1. Start recording session on server FIRST
+            const model = document.getElementById('model-select').value;
+            const formData = new FormData();
+            formData.append('token', authToken);
+            if (model) formData.append('model', model);
+
+            const startRes = await fetch(`${API_URL}/recording/${selectedPatientId}/start`, {
+                method: 'POST',
+                body: formData
+            });
+
+            if (!startRes.ok) {
+                throw new Error("No se pudo iniciar la sesión de grabación");
+            }
+
+            const startData = await startRes.json();
+            activeSessionId = startData.session_id;
+            chunksSent = 0;
+            console.log(`📹 Streaming session started: ${activeSessionId}`);
+
+            // 2. Get audio stream
+            audioStream = await navigator.mediaDevices.getUserMedia({
                 audio: {
                     sampleRate: 16000,
                     channelCount: 1,
@@ -784,31 +838,46 @@ async function toggleRecording() {
                 }
             });
 
-            // Verificar formatos soportados (Priorizar OGG/OPUS)
-            let mimeType = 'audio/webm;codecs=opus';
-            let extension = 'webm';
+            // Detect supported format
+            recordingMimeType = 'audio/webm;codecs=opus';
+            recordingExtension = 'webm';
 
             if (MediaRecorder.isTypeSupported('audio/ogg;codecs=opus')) {
-                mimeType = 'audio/ogg;codecs=opus';
-                extension = 'ogg';
+                recordingMimeType = 'audio/ogg;codecs=opus';
+                recordingExtension = 'ogg';
             }
 
-            const options = {
-                mimeType: mimeType,
-                audioBitsPerSecond: 16000 // 16kbps optimización para voz
-            };
+            recordingChunks = [];
 
-            mediaRecorder = new MediaRecorder(stream, options);
-            audioChunks = [];
-            mediaRecorder.ondataavailable = (event) => audioChunks.push(event.data);
-            mediaRecorder.onstop = () => {
-                const blob = new Blob(audioChunks, { type: mimeType });
-                const fileName = `vivo_${Date.now()}.${extension}`;
-                const file = new File([blob], fileName, { type: mimeType });
-                showConfirmModal(file);
-            };
+            // Reset and show chunk progress UI
+            const progressContainer = document.getElementById('chunk-progress-container');
+            const chunkCountEl = document.getElementById('chunk-count');
+            const chunkListEl = document.getElementById('chunk-list');
+            chunkCountEl.innerText = '0';
+            chunkListEl.innerHTML = '';
+            progressContainer.classList.remove('hidden');
 
-            mediaRecorder.start();
+            // 3. Start first chunk recorder (streaming mode)
+            startStreamingChunkRecorder(audioStream, 0, chunkCountEl, chunkListEl);
+
+            // 4. Set interval to rotate chunks every 30 seconds
+            chunkingInterval = setInterval(() => {
+                if (mediaRecorder && mediaRecorder.state === 'recording') {
+                    const nextChunkIndex = chunksSent;
+                    console.log(`⏱️ Rotating to chunk ${nextChunkIndex + 1}...`);
+
+                    // Stop current recorder (triggers upload)
+                    mediaRecorder.stop();
+
+                    // Start new recorder for next chunk
+                    setTimeout(() => {
+                        if (audioStream && audioStream.active) {
+                            startStreamingChunkRecorder(audioStream, nextChunkIndex, chunkCountEl, chunkListEl);
+                        }
+                    }, 100);
+                }
+            }, 30000); // 30 seconds per chunk
+
             document.getElementById('record-card').classList.add('border-rose-500');
             document.getElementById('record-title').innerText = "Detener y Guardar";
             startTime = Date.now();
@@ -816,24 +885,198 @@ async function toggleRecording() {
                 const diff = Date.now() - startTime;
                 document.getElementById('record-timer-text').innerText = `Grabando: ${Math.floor(diff / 1000)}s`;
             }, 1000);
+
         } catch (err) {
             console.error(err);
             alert("Error al iniciar grabación: " + err.message);
+            activeSessionId = null;
         }
     } else {
-        mediaRecorder.stop();
-        mediaRecorder.stream.getTracks().forEach(t => t.stop());
+        // Stop recording
+        if (chunkingInterval) {
+            clearInterval(chunkingInterval);
+            chunkingInterval = null;
+        }
+
+        // Stop current MediaRecorder (triggers final chunk upload)
+        if (mediaRecorder && mediaRecorder.state === 'recording') {
+            mediaRecorder.stop();
+        }
+
+        // Stop all tracks
+        if (audioStream) {
+            audioStream.getTracks().forEach(t => t.stop());
+            audioStream = null;
+        }
+
         document.getElementById('record-card').classList.remove('border-rose-500');
         document.getElementById('record-title').innerText = "Grabar en Vivo";
+        document.getElementById('record-timer-text').innerText = "Inicia grabación directa";
         clearInterval(recordingInterval);
+
+        // Hide progress
+        const progressContainer = document.getElementById('chunk-progress-container');
+        progressContainer.classList.add('hidden');
+
+        // Send finish signal to server after last chunk uploads
+        setTimeout(async () => {
+            if (activeSessionId && chunksSent > 0) {
+                console.log(`🏁 Finishing session ${activeSessionId} with ${chunksSent} chunks`);
+
+                const formData = new FormData();
+                formData.append('token', authToken);
+                formData.append('total_chunks', chunksSent.toString());
+
+                try {
+                    const finishRes = await fetch(`${API_URL}/recording/${activeSessionId}/finish`, {
+                        method: 'POST',
+                        body: formData
+                    });
+
+                    if (finishRes.ok) {
+                        console.log(`✅ Session ${activeSessionId} finish signal sent`);
+                        loadSessions(selectedPatientId);
+                    }
+                } catch (e) {
+                    console.error("Error finishing session:", e);
+                }
+
+                activeSessionId = null;
+                chunksSent = 0;
+            }
+        }, 500);
     }
 }
 
+function startStreamingChunkRecorder(stream, chunkIndex, chunkCountEl, chunkListEl) {
+    const options = {
+        mimeType: recordingMimeType,
+        audioBitsPerSecond: 24000
+    };
+
+    mediaRecorder = new MediaRecorder(stream, options);
+    let chunkData = [];
+
+    mediaRecorder.ondataavailable = (event) => {
+        if (event.data.size > 0) {
+            chunkData.push(event.data);
+        }
+    };
+
+    mediaRecorder.onstop = async () => {
+        if (chunkData.length > 0 && activeSessionId) {
+            const chunkBlob = new Blob(chunkData, { type: recordingMimeType });
+            const currentChunkIndex = chunksSent;
+
+            console.log(`📤 Uploading chunk ${currentChunkIndex} (${(chunkBlob.size / 1024).toFixed(1)} KB)...`);
+
+            // Upload chunk immediately to server for parallel transcription
+            const formData = new FormData();
+            formData.append('token', authToken);
+            formData.append('chunk_index', currentChunkIndex.toString());
+            formData.append('chunk', chunkBlob, `chunk_${currentChunkIndex}.${recordingExtension}`);
+
+            try {
+                const res = await fetch(`${API_URL}/recording/${activeSessionId}/chunk`, {
+                    method: 'POST',
+                    body: formData
+                });
+
+                if (res.ok) {
+                    chunksSent++;
+                    console.log(`✅ Chunk ${currentChunkIndex} uploaded - transcribing in parallel`);
+
+                    // Update visual progress
+                    chunkCountEl.innerText = chunksSent.toString();
+
+                    // Add visual chunk indicator (green = uploading/transcribing)
+                    const chunkBadge = document.createElement('div');
+                    chunkBadge.className = 'bg-emerald-500/20 text-emerald-400 px-2 py-0.5 rounded text-[10px] font-bold animate-in zoom-in-50 duration-200';
+                    chunkBadge.innerText = `${chunksSent}`;
+                    chunkListEl.appendChild(chunkBadge);
+                } else {
+                    console.error(`❌ Failed to upload chunk ${currentChunkIndex}`);
+                }
+            } catch (e) {
+                console.error(`❌ Error uploading chunk ${currentChunkIndex}:`, e);
+            }
+        }
+    };
+
+    mediaRecorder.start();
+    console.log(`🎙️ Recording chunk ${chunkIndex} (streaming to server)`);
+}
+
 function showConfirmModal(file) { pendingAudioFile = file; document.getElementById('confirm-modal').classList.remove('hidden'); }
-function confirmUpload() { if (pendingAudioFile) { uploadFile(pendingAudioFile); pendingAudioFile = null; } document.getElementById('confirm-modal').classList.add('hidden'); }
-function cancelUpload() { pendingAudioFile = null; document.getElementById('confirm-modal').classList.add('hidden'); }
+function confirmUpload() {
+    // Handle chunked recording (real-time)
+    if (pendingChunks && pendingChunks.length > 0) {
+        uploadChunkedRecording(pendingChunks);
+        pendingChunks = null;
+    }
+    // Handle single file upload
+    else if (pendingAudioFile) {
+        uploadFile(pendingAudioFile);
+        pendingAudioFile = null;
+    }
+    document.getElementById('confirm-modal').classList.add('hidden');
+}
+function cancelUpload() { pendingAudioFile = null; pendingChunks = null; recordingChunks = []; document.getElementById('confirm-modal').classList.add('hidden'); }
 function showNewPatientModal() { document.getElementById('new-patient-modal').classList.remove('hidden'); }
 function hideNewPatientModal() { document.getElementById('new-patient-modal').classList.add('hidden'); }
+
+
+// Chunked recording modal functions (reuses same modal as file upload)
+
+function showConfirmModalChunked(chunks) {
+    pendingChunks = chunks;
+    pendingAudioFile = null;  // Clear single file mode
+    document.getElementById('confirm-modal').classList.remove('hidden');
+}
+
+function confirmUploadChunked() {
+    if (pendingChunks && pendingChunks.length > 0) {
+        uploadChunkedRecording(pendingChunks);
+        pendingChunks = null;
+    }
+    document.getElementById('confirm-modal').classList.add('hidden');
+}
+
+async function uploadChunkedRecording(chunks) {
+    if (!authToken || !selectedPatientId) return;
+
+    const formData = new FormData();
+    formData.append('token', authToken);
+
+    // Append each chunk as a separate file
+    chunks.forEach((chunk, index) => {
+        formData.append('chunks', chunk);
+    });
+
+    const model = document.getElementById('model-select').value;
+    if (model) formData.append('model', model);
+
+    try {
+        console.log(`📤 Uploading ${chunks.length} chunks for parallel processing...`);
+        const response = await fetch(`${API_URL}/upload/${selectedPatientId}/chunked`, {
+            method: 'POST',
+            body: formData
+        });
+
+        if (response.ok) {
+            const result = await response.json();
+            console.log(`✅ Chunked upload successful. Session: ${result.session_id}, Chunks: ${result.chunks_received}`);
+            loadSessions(selectedPatientId);
+        } else {
+            const error = await response.text();
+            console.error('Upload failed:', error);
+            alert("Error al subir grabación");
+        }
+    } catch (e) {
+        console.error('Upload error:', e);
+        alert("Error al subir grabación: " + e.message);
+    }
+}
 
 document.getElementById('audio-input').addEventListener('change', (e) => {
     const file = e.target.files[0];
