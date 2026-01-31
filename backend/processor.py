@@ -668,29 +668,42 @@ class AudioProcessorManager:
         No anonymization needed - all data stays local.
         """
         system_prompt = (
-            "Eres un asistente psicológico experto. Tu tarea es redactar una nota de evolución clínica en un ÚNICO PÁRRAFO de PROSA CONTINUA.\n"
-            "ES MUY IMPORTANTE: NO uses formato JSON dentro del texto. NO uses llaves {}, ni corchetes, ni comillas innecesarias.\n"
-            "Debes responder EXCLUSIVAMENTE con un objeto JSON válido con esta única clave:\n"
-            '{"nota_clinica": "El texto del párrafo aquí..."}'
+            "Eres un asistente psicológico experto. Tu tarea es analizar la conversación y redactar una nota de evolución clínica PROFESIONAL.\n"
+            "Debes responder EXCLUSIVAMENTE con un objeto JSON válido.\n"
+            "Ejemplo de formato esperado:\n"
+            '{"nota_clinica": "El paciente presenta..."}'
         )
         
-        user_prompt = f"Conversación clínica:\n\n{transcript}"
+        user_prompt = f"Conversación clínica:\n\n{transcript}\n\nGenera la nota clínica en JSON ahora:"
         
         try:
             start_gen = time.time()
+            print(f"[OLLAMA] Generando con {model_name}...")
             response = ollama.generate(
                 model=model_name, 
                 system=system_prompt, 
                 prompt=user_prompt, 
                 format='json', 
-                options={'temperature': 0.1}
+                options={'temperature': 0.3} # Un poco mas de creatividad para evitar repeticion
             )
             gen_duration = round(time.time() - start_gen, 2)
             
             response_text = response.get('response', '')
+            print(f"[DEBUG] Raw Response ({len(response_text)} chars): {response_text[:200]}...") # Log raw response
+            
             try:
-                # Clean markdown code blocks
-                clean_text = re.sub(r'```(?:json)?\s*', '', response_text).replace('```', '').strip()
+                # Robust extraction for "Thinking" models and formatted output
+                # 1. Remove <think> blocks (reasoning chains)
+                clean_text = re.sub(r'<think>.*?</think>', '', response_text, flags=re.DOTALL)
+                
+                # 2. Extract JSON object (find first { and last }) to ignore conversational prefixes/suffixes
+                json_match = re.search(r'(\{.*\})', clean_text, re.DOTALL)
+                if json_match:
+                    clean_text = json_match.group(1)
+                
+                # 3. Clean residual markdown
+                clean_text = re.sub(r'```(?:json)?', '', clean_text).replace('```', '').strip()
+                
                 data = json.loads(clean_text)
                 
                 # Add metrics

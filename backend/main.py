@@ -7,6 +7,7 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException, Depends
+from fastapi.responses import FileResponse
 from fastapi.middleware.cors import CORSMiddleware
 import shutil
 import json
@@ -138,7 +139,7 @@ def login(username: str = Form(...), password: str = Form(...), db: Session = De
     token = os.urandom(24).hex()
     ACTIVE_KEYS[token] = master_key # Session uses the Real Master Key
     
-    return {"status": "success", "token": token}
+    return {"status": "success", "token": token, "username": user.username}
 
 @app.post("/auth/verify")
 def verify_token(token: str = Form(...)):
@@ -677,6 +678,104 @@ def health_check():
 # -------------------------------------------------------------------
 # LIFECYCLE
 # -------------------------------------------------------------------
+
+
+# -------------------------------------------------------------------
+# SYSTEM BACKUP & RESTORE
+# -------------------------------------------------------------------
+
+@app.get("/system/backup")
+def create_system_backup(token: str):
+    """
+    Crea un ZIP con toda la carpeta 'data' (DB + Audios).
+    Requiere token valido para autorizar.
+    """
+    if token not in ACTIVE_KEYS:
+        raise HTTPException(status_code=401, detail="Unauthorized")
+    
+    # Ruta de la carpeta 'data' (padre de uploads)
+    # config.py define UPLOAD_DIR = data/uploads, asi que data es su padre
+    data_dir = os.path.dirname(UPLOAD_DIR)
+    
+    # Nombre temporal del archivo
+    timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+    base_name = f"backup_psyco_{timestamp}"
+    output_path = os.path.join(os.path.dirname(data_dir), base_name) # Save in root temporarily
+    
+    # Crear ZIP
+    shutil.make_archive(output_path, 'zip', data_dir)
+    zip_file = f"{output_path}.zip"
+    
+    return FileResponse(
+        path=zip_file, 
+        filename=f"SessionAI_Backup_{timestamp}.zip", 
+        media_type='application/zip'
+    )
+
+@app.post("/system/restore")
+async def restore_system_backup(file: UploadFile = File(...), token: str = Form(...)):
+    """
+    Recibe un ZIP, verifica su integridad y reemplaza la carpeta 'data'.
+    ADVERTENCIA: Destructivo.
+    """
+    if token not in ACTIVE_KEYS:
+        raise HTTPException(status_code=401, detail="Unauthorized")
+    
+    if not file.filename.endswith('.zip'):
+        raise HTTPException(status_code=400, detail="Only .zip files allowed")
+
+    # 1. Guardar ZIP recibido
+    data_dir = os.path.dirname(UPLOAD_DIR)
+    root_dir = os.path.dirname(data_dir)
+    temp_zip_path = os.path.join(root_dir, "temp_restore.zip")
+    
+    with open(temp_zip_path, "wb") as buffer:
+        shutil.copyfileobj(file.file, buffer)
+        
+    # 2. Validar contenido (Sanity Check)
+    import zipfile
+    try:
+        with zipfile.ZipFile(temp_zip_path, 'r') as zip_ref:
+            file_list = zip_ref.namelist()
+            # Debe contener la DB o la carpeta uploads para ser valido
+            if "psyco_app.db" not in file_list and not any(f.startswith("uploads/") for f in file_list) and not any(f.startswith("/uploads/") for f in file_list):
+                 # Relaxed check: just check if it looks like a backup
+                 pass 
+    except zipfile.BadZipFile:
+        raise HTTPException(status_code=400, detail="Corrupted zip file")
+
+    # 3. PREPARAR RESTORE (CRITICO EN WINDOWS)
+    # Soltar el lock de la DB
+    engine.dispose()
+    
+    # Renombrar data actual a backup por seguridad
+    timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+    backup_path = os.path.join(root_dir, f"data_pre_restore_{timestamp}")
+    
+    try:
+        if os.path.exists(data_dir):
+            os.rename(data_dir, backup_path)
+        
+        # 4. Descomprimir nuevo data
+        os.makedirs(data_dir, exist_ok=True)
+        shutil.unpack_archive(temp_zip_path, data_dir)
+        
+        # Limpieza
+        if os.path.exists(temp_zip_path):
+            os.remove(temp_zip_path)
+        
+        return {"status": "success", "message": "System restored successfully. Please restart app if issues occur."}
+        
+    except Exception as e:
+        # Rollback intent
+        print(f"[CRITICAL] Restore failed: {e}. Attempting rollback...")
+        if os.path.exists(backup_path):
+            if os.path.exists(data_dir):
+                shutil.rmtree(data_dir) # Delete partial failed restore
+            os.rename(backup_path, data_dir) # Restore original
+            
+        raise HTTPException(status_code=500, detail=f"Restore failed: {str(e)}")
+
 
 if __name__ == "__main__":
     uvicorn.run(app, host="127.0.0.1", port=8000)

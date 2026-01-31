@@ -1,0 +1,95 @@
+:root {
+    --bg-dark: #0f172a;
+    --card-dark: #1e293b;
+    --text-main: #f1f5f9;
+    --primary: #6366f1;
+    --border: #334155;
+}
+
+body {
+    font-family: 'Outfit', sans-serif;
+    background-color: var(--bg-dark);
+    color: var(--text-main);
+    height: 100vh;
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+}
+
+.custom-card {
+    background-color: var(--card-dark);
+    border: 1px solid var(--border);
+    border-radius: 1.25rem;
+}
+
+/* Estilo para que el input no se ponga amarillo/azul con autocompletado */
+input:-webkit-autofill,
+input:-webkit-autofill:hover,
+input:-webkit-autofill:focus,
+input:-webkit-autofill:active {
+    -webkit-box-shadow: 0 0 0 30px #0d121f inset !important;
+    -webkit-text-fill-color: white !important;
+    transition: background-color 5000s ease-in-out 0s;
+}
+
+input,
+select,
+textarea {
+    background-color: #0d121f !important;
+    border: 1px solid var(--border) !important;
+    color: var(--text-main) !important;
+    transition: all 0.2s;
+}
+
+input:focus {
+    border-color: var(--primary) !important;
+    box-shadow: 0 0 0 2px rgba(99, 102, 241, 0.2);
+    outline: none;
+}
+
+::-webkit-scrollbar {
+    width: 6px;
+}
+
+::-webkit-scrollbar-thumb {
+    background: #334155;
+    border-radius: 10px;
+}
+
+.patient-item {
+    border-left: 3px solid transparent;
+}
+
+.patient-item.selected {
+    background: rgba(99, 102, 241, 0.15);
+    border-left-color: var(--primary);
+}
+
+.shake {
+    animation: shake 0.5s cubic-bezier(.36, .07, .19, .97) both;
+}
+
+@keyframes shake {
+
+    10%,
+    90% {
+        transform: translate3d(-1px, 0, 0);
+    }
+
+    20%,
+    97%,
+    80% {
+        transform: translate3d(2px, 0, 0);
+    }
+
+    30%,
+    50%,
+    70% {
+        transform: translate3d(-4px, 0, 0);
+    }
+
+    40%,
+    60% {
+        transform: translate3d(4px, 0, 0);
+    }
+}

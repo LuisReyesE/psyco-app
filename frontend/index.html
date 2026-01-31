@@ -14,105 +14,11 @@
 
     <!-- Local Fonts -->
     <link href="./css/fonts.css" rel="stylesheet">
-    <style>
-        :root {
-            --bg-dark: #0f172a;
-            --card-dark: #1e293b;
-            --text-main: #f1f5f9;
-            --primary: #6366f1;
-            --border: #334155;
-        }
-
-        body {
-            font-family: 'Outfit', sans-serif;
-            background-color: var(--bg-dark);
-            color: var(--text-main);
-            height: 100vh;
-            overflow: hidden;
-            display: flex;
-            flex-direction: column;
-        }
-
-        .custom-card {
-            background-color: var(--card-dark);
-            border: 1px solid var(--border);
-            border-radius: 1.25rem;
-        }
-
-        /* Estilo para que el input no se ponga amarillo/azul con autocompletado */
-        input:-webkit-autofill,
-        input:-webkit-autofill:hover,
-        input:-webkit-autofill:focus,
-        input:-webkit-autofill:active {
-            -webkit-box-shadow: 0 0 0 30px #0d121f inset !important;
-            -webkit-text-fill-color: white !important;
-            transition: background-color 5000s ease-in-out 0s;
-        }
-
-        input,
-        select,
-        textarea {
-            background-color: #0d121f !important;
-            border: 1px solid var(--border) !important;
-            color: var(--text-main) !important;
-            transition: all 0.2s;
-        }
-
-        input:focus {
-            border-color: var(--primary) !important;
-            box-shadow: 0 0 0 2px rgba(99, 102, 241, 0.2);
-            outline: none;
-        }
-
-        ::-webkit-scrollbar {
-            width: 6px;
-        }
-
-        ::-webkit-scrollbar-thumb {
-            background: #334155;
-            border-radius: 10px;
-        }
-
-        .patient-item {
-            border-left: 3px solid transparent;
-        }
-
-        .patient-item.selected {
-            background: rgba(99, 102, 241, 0.15);
-            border-left-color: var(--primary);
-        }
-
-        .shake {
-            animation: shake 0.5s cubic-bezier(.36, .07, .19, .97) both;
-        }
-
-        @keyframes shake {
-
-            10%,
-            90% {
-                transform: translate3d(-1px, 0, 0);
-            }
-
-            20%,
-            80% {
-                transform: translate3d(2px, 0, 0);
-            }
-
-            30%,
-            50%,
-            70% {
-                transform: translate3d(-4px, 0, 0);
-            }
-
-            40%,
-            60% {
-                transform: translate3d(4px, 0, 0);
-            }
-        }
-    </style>
+    <link href="./css/main.css" rel="stylesheet">
 </head>
 
 <body class="text-slate-200">
+
 
     <!-- Loading Screen -->
     <div id="loading-screen" class="fixed inset-0 bg-slate-950 z-[200] flex items-center justify-center">
@@ -257,7 +163,12 @@
             </div>
             <h1 class="text-xl font-bold tracking-tight">Session <span class="text-indigo-400 font-light">AI</span></h1>
         </div>
+
         <div class="flex items-center gap-4">
+            <!-- User Greeting -->
+            <span id="user-greeting" class="text-sm font-medium text-slate-300 hidden md:block"></span>
+            <div class="h-4 w-px bg-slate-700 hidden md:block"></div>
+
             <div
                 class="flex items-center gap-2 bg-slate-800/50 px-4 py-1.5 rounded-full border border-border text-xs font-semibold select-none">
                 <span id="status-dot" class="w-2 h-2 rounded-full bg-slate-500"></span>
@@ -285,10 +196,116 @@
                     class="w-full bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-bold py-2.5 rounded-xl transition-all flex items-center justify-center gap-2"><span>+
                         Nuevo Paciente</span></button>
             </div>
+
+            <!-- Patient List (RESTORED) -->
             <div class="flex-1 overflow-y-auto px-4 py-4 space-y-2" id="patient-list">
                 <div class="text-center py-10 text-slate-500 text-sm">Cargando pacientes...</div>
             </div>
+
+            <!-- Settings Button (Bottom of Sidebar) -->
+            <div class="p-4 border-t border-border mt-auto">
+                <button onclick="openSettingsModal()"
+                    class="w-full flex items-center gap-3 px-4 py-3 text-slate-400 hover:text-white hover:bg-slate-800/50 rounded-xl transition-all group">
+                    <svg class="w-5 h-5 group-hover:rotate-90 transition-transform duration-500" fill="none"
+                        stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                            d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z">
+                        </path>
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                            d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"></path>
+                    </svg>
+                    <span class="text-sm font-medium">Configuración y Datos</span>
+                </button>
+            </div>
         </aside>
+
+        <!-- SETTINGS MODAL -->
+        <div id="settings-modal"
+            class="hidden fixed inset-0 bg-slate-950/80 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+            <div class="custom-card w-full max-w-2xl overflow-hidden animate-in zoom-in-95 duration-200">
+                <!-- Header -->
+                <div class="px-6 py-4 border-b border-border flex justify-between items-center bg-slate-900/50">
+                    <h3 class="text-lg font-bold text-white flex items-center gap-2">
+                        <svg class="w-5 h-5 text-indigo-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                                d="M4 7v10c0 2.21 3.582 4 8 4s8-1.79 8-4V7M4 7c0 2.21 3.582 4 8 4s8-1.79 8-4M4 7c0-2.21 3.582-4 8-4s8 1.79 8 4m0 5c0 2.21-3.582 4-8 4s-8-1.79-8-4">
+                            </path>
+                        </svg>
+                        Gestión de Datos
+                    </h3>
+                    <button onclick="closeSettingsModal()" class="text-slate-400 hover:text-white transition-colors">
+                        <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                                d="M6 18L18 6M6 6l12 12">
+                            </path>
+                        </svg>
+                    </button>
+                </div>
+
+                <!-- Body -->
+                <div class="p-8 grid grid-cols-1 md:grid-cols-2 gap-8 items-stretch">
+                    <!-- Export Section -->
+                    <div class="flex flex-col h-full space-y-4">
+                        <div
+                            class="w-12 h-12 rounded-xl bg-emerald-500/10 flex items-center justify-center border border-emerald-500/20">
+                            <svg class="w-6 h-6 text-emerald-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                                    d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"></path>
+                            </svg>
+                        </div>
+                        <div class="flex-1">
+                            <h4 class="text-white font-bold mb-1">Copia de Seguridad</h4>
+                            <p class="text-slate-400 text-sm">Descarga un archivo ZIP cifrado con todos los pacientes,
+                                sesiones y audios.</p>
+                        </div>
+                        <button onclick="downloadBackup()"
+                            class="w-full mt-auto bg-emerald-600 hover:bg-emerald-700 text-white font-bold py-2.5 rounded-xl transition-all shadow-lg shadow-emerald-900/20 flex items-center justify-center gap-2">
+                            <span>Descargar Todo (.zip)</span>
+                        </button>
+                    </div>
+
+                    <!-- Import Section -->
+                    <div class="flex flex-col h-full space-y-4 relative">
+                        <div
+                            class="w-12 h-12 rounded-xl bg-rose-500/10 flex items-center justify-center border border-rose-500/20">
+                            <svg class="w-6 h-6 text-rose-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                                    d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12"></path>
+                            </svg>
+                        </div>
+                        <div class="flex-1">
+                            <h4 class="text-white font-bold mb-1">Restaurar Sistema</h4>
+                            <p class="text-slate-400 text-sm">Reemplaza la base de datos actual con una copia anterior.
+                            </p>
+                        </div>
+
+                        <label class="block w-full cursor-pointer mt-auto">
+                            <input type="file" id="restore-file-input" accept=".zip" class="hidden"
+                                onchange="handleRestoreSelect(this)">
+                            <div
+                                class="w-full bg-slate-800 hover:bg-slate-700 text-slate-300 font-bold py-2.5 rounded-xl transition-all border border-slate-700 hover:border-slate-500 flex items-center justify-center gap-2 text-center">
+                                Importar Copia
+                            </div>
+                        </label>
+
+                        <!-- Divider moved to end to fix layout alignment -->
+                        <div class="absolute inset-y-0 left-0 -ml-4 w-px bg-slate-800 hidden md:block"></div>
+                    </div>
+                </div>
+
+                <!-- Footer / Warning -->
+                <div class="px-6 py-4 bg-slate-900/30 border-t border-border">
+                    <p class="text-xs text-slate-500 text-center flex items-center justify-center gap-2">
+                        <svg class="w-4 h-4 text-amber-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                                d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z">
+                            </path>
+                        </svg>
+                        La restauración sobrescribirá todos los datos actuales irreversiblemente.
+                    </p>
+                </div>
+            </div>
+        </div>
 
         <main class="flex-1 flex flex-col relative overflow-hidden" id="main-area">
             <div id="intro-view"
@@ -302,7 +319,8 @@
                 </div>
                 <div class="text-center space-y-2">
                     <h2 class="text-2xl font-bold text-slate-100 italic">Bienvenido a Session AI</h2>
-                    <p class="text-slate-500 max-w-sm">Selecciona un paciente de la izquierda para ver sus sesiones o
+                    <p class="text-slate-500 max-w-sm">Selecciona un paciente de la izquierda para ver sus
+                        sesiones o
                         crear una nueva intervención con IA.</p>
                 </div>
             </div>
@@ -311,14 +329,17 @@
                 class="hidden absolute inset-0 flex flex-col p-10 overflow-y-auto space-y-8 animate-in slide-in-from-right-4 duration-500">
                 <div class="flex justify-between items-end border-b border-border pb-6">
                     <div class="space-y-1">
-                        <h2 id="active-patient-name" class="text-3xl font-bold text-white tracking-tight">Paciente
+                        <h2 id="active-patient-name" class="text-3xl font-bold text-white tracking-tight">
+                            Paciente
                             Seleccionado</h2>
-                        <p class="text-indigo-400 text-sm font-medium tracking-wide uppercase">Historial Clínico Digital
+                        <p class="text-indigo-400 text-sm font-medium tracking-wide uppercase">Historial
+                            Clínico Digital
                         </p>
                     </div>
                     <div class="flex gap-4">
                         <div class="max-w-xs">
-                            <label class="text-[10px] font-bold text-slate-500 uppercase mb-1 block">Modelo de
+                            <label class="text-[10px] font-bold text-slate-500 uppercase mb-1 block">Modelo
+                                de
                                 Inteligencia:</label>
                             <select id="model-select" class="text-xs p-2 rounded-lg min-w-[200px]"></select>
                         </div>
@@ -345,17 +366,29 @@
                     <div id="record-card"
                         class="custom-card p-6 border-dashed border-2 border-rose-500/20 hover:border-rose-500/40 transition-all group flex flex-col items-center justify-center space-y-4 py-12 cursor-pointer"
                         onclick="toggleRecording()">
-                        <div id="record-icon-bg"
-                            class="bg-rose-600/10 p-4 rounded-2xl group-hover:scale-110 transition-transform">
-                            <svg class="w-8 h-8 text-rose-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
-                                    d="M19 11a7 7 0 01-7 7m0 0a7 7 0 01-7-7m7 7v4m0 0H8m4 0h4m-4-8a3 3 0 01-3-3V5a3 3 0 116 0v6a3 3 0 01-3 3z">
-                                </path>
-                            </svg>
+                        <div class="flex items-center gap-3">
+                            <div id="record-icon-bg"
+                                class="bg-rose-600/10 p-4 rounded-2xl group-hover:scale-110 transition-transform">
+                                <svg class="w-8 h-8 text-rose-400" fill="none" stroke="currentColor"
+                                    viewBox="0 0 24 24">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                                        d="M19 11a7 7 0 01-7 7m0 0a7 7 0 01-7-7m7 7v4m0 0H8m4 0h4m-4-8a3 3 0 01-3-3V5a3 3 0 116 0v6a3 3 0 01-3 3z">
+                                    </path>
+                                </svg>
+                            </div>
+                            <button id="pause-btn" onclick="event.stopPropagation(); togglePause()"
+                                class="hidden bg-slate-700/50 hover:bg-amber-500/20 text-slate-400 hover:text-amber-400 p-3 rounded-xl transition-all border border-slate-600 hover:border-amber-500/50">
+                                <svg id="pause-icon" class="w-6 h-6" fill="none" stroke="currentColor"
+                                    viewBox="0 0 24 24">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                                        d="M10 9v6m4-6v6m7-3a9 9 0 11-18 0 9 9 0 0118 0z"></path>
+                                </svg>
+                            </button>
                         </div>
                         <div class="text-center">
                             <h4 id="record-title" class="font-bold text-slate-100">Grabar en Vivo</h4>
-                            <p id="record-timer-text" class="text-xs text-slate-500">Inicia grabación directa</p>
+                            <p id="record-timer-text" class="text-xs text-slate-500">Inicia grabación
+                                directa</p>
                         </div>
                     </div>
                 </div>
@@ -370,8 +403,11 @@
                             </div>
                             <div class="flex-1 flex items-center gap-3">
                                 <div class="flex items-center gap-2 bg-slate-800/60 px-3 py-1.5 rounded-lg">
-                                    <svg class="w-4 h-4 text-indigo-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10"></path>
+                                    <svg class="w-4 h-4 text-indigo-400" fill="none" stroke="currentColor"
+                                        viewBox="0 0 24 24">
+                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                                            d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10">
+                                        </path>
                                     </svg>
                                     <span id="chunk-count" class="text-indigo-300 text-sm font-mono font-bold">0</span>
                                     <span class="text-slate-500 text-xs">chunks</span>
@@ -390,7 +426,8 @@
                                 class="bg-slate-800 text-slate-400 px-2 py-0.5 rounded-lg text-[10px]">0</span>
                         </h3>
                         <button onclick="loadSessions(selectedPatientId)"
-                            class="text-indigo-400 hover:text-indigo-300 text-xs font-semibold">Actualizar Historial
+                            class="text-indigo-400 hover:text-indigo-300 text-xs font-semibold">Actualizar
+                            Historial
                             ↺</button>
                     </div>
                     <div class="custom-card overflow-hidden">
@@ -473,7 +510,8 @@
             <div class="flex-1 flex overflow-hidden">
                 <div class="w-2/5 p-8 border-r border-border flex flex-col">
                     <div class="flex items-center justify-between mb-4">
-                        <h4 class="text-[10px] font-bold text-slate-500 uppercase tracking-widest">Transcripción</h4>
+                        <h4 class="text-[10px] font-bold text-slate-500 uppercase tracking-widest">Transcripción
+                        </h4>
 
                         <!-- Moved Audio Player -->
                         <div id="audio-container" class="flex items-center gap-2">
@@ -495,7 +533,8 @@
                 </div>
                 <div class="flex-1 p-8 flex flex-col bg-slate-900/40">
                     <div class="flex items-center justify-between mb-4">
-                        <h4 class="text-[10px] font-bold text-indigo-400 uppercase tracking-widest">Resumen Clínico</h4>
+                        <h4 class="text-[10px] font-bold text-indigo-400 uppercase tracking-widest">Resumen
+                            Clínico</h4>
                     </div>
                     <textarea id="edit-nota-clinica"
                         class="flex-1 w-full p-8 rounded-2xl border border-slate-700 bg-slate-950 text-slate-100 text-sm leading-8 resize-none shadow-inner focus:ring-1 focus:ring-indigo-500/50 outline-none transition-all"></textarea>
@@ -515,7 +554,8 @@
     <!-- Hidden audio element for modal -->
     <audio id="modal-audio-player" class="hidden"></audio>
 
-    <script src="app.js"></script>
+    <script src="js/app.js"></script>
+    <script src="js/backup.js"></script>
 </body>
 
 </html>

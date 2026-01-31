@@ -9,10 +9,8 @@ let allPatients = [];
 let pendingAudioFile = null;
 
 // Chunked recording support (real-time)
-let recordingChunks = [];  // Individual 30s chunks for parallel processing
 let recordingMimeType = '';
 let recordingExtension = '';
-let pendingChunks = null;  // Pending chunks for upload confirmation
 
 // Auth State - Usar localStorage para mayor persistencia en Edge
 let authToken = localStorage.getItem('psyco_token') || sessionStorage.getItem('psyco_token') || null;
@@ -44,6 +42,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     if (authToken) {
         document.getElementById('auth-modal').classList.add('hidden');
         document.getElementById('logout-btn').classList.remove('hidden');
+        updateGreeting();
         initializeApp();
     } else {
         document.getElementById('auth-modal').classList.remove('hidden');
@@ -158,6 +157,12 @@ async function handleAuthAction() {
                 authToken = data.token;
                 localStorage.setItem('psyco_token', authToken);
                 sessionStorage.setItem('psyco_token', authToken);
+
+                // Store username for greeting
+                if (data.username) {
+                    localStorage.setItem('psyco_user', data.username);
+                }
+
                 document.getElementById('auth-modal').classList.add('hidden');
                 document.getElementById('logout-btn').classList.remove('hidden');
 
@@ -165,6 +170,7 @@ async function handleAuthAction() {
                 userInput.value = '';
                 passInput.value = '';
 
+                updateGreeting();
                 initializeApp();
             } else {
                 // REGISTRO EXITOSO -> MOSTRAR BACKUP CODE
@@ -275,6 +281,7 @@ function handleUnauthorized() {
 function handleLogout() {
     authToken = null;
     localStorage.removeItem('psyco_token');
+    localStorage.removeItem('psyco_user'); // Clear username
     sessionStorage.removeItem('psyco_token');
     sessionStorage.removeItem('activePatientId');
     sessionStorage.removeItem('activePatientName');
@@ -290,6 +297,19 @@ function handleLogout() {
     // Reset login UI
     document.getElementById('login-username').value = '';
     document.getElementById('login-password').value = '';
+}
+
+function updateGreeting() {
+    const username = localStorage.getItem('psyco_user');
+    const greetingEl = document.getElementById('user-greeting');
+    if (greetingEl) {
+        if (username) {
+            greetingEl.innerText = `Hola, ${username.charAt(0).toUpperCase() + username.slice(1)}`;
+            greetingEl.classList.remove('hidden');
+        } else {
+            greetingEl.classList.add('hidden');
+        }
+    }
 }
 
 function initializeApp() {
@@ -469,19 +489,26 @@ function renderSessionsTable(sessions) {
                 durationText = `<span class="text-xs text-slate-400">${formatDuration(struct._metrics.total_time)}</span>`;
             }
         } else if (s.status === 'recording') {
-            // Verificar si es una sesión activa real o una huérfana
             const ageMinutes = (Date.now() - new Date(s.created_at).getTime()) / 60000;
 
-            if (ageMinutes < 90) {  // 90 min = permite sesiones de hasta ~1 hora
-                // Sesión de streaming en vivo real - badge morado pulsante
-                statusMarkup = `<span class="bg-purple-500/30 text-purple-300 text-[9px] px-2 py-0.5 rounded-full font-bold border border-purple-500/40 animate-pulse">EN VIVO</span>`;
-                if (s.chunks_transcribed !== undefined && s.chunks_total !== undefined && s.chunks_total > 0) {
-                    durationText = `<span class="text-[10px] text-purple-400 italic">${s.chunks_transcribed}/${s.chunks_total} chunks</span>`;
+            // Check if this is the locally paused session
+            const isLocallyPaused = (s.id === activeSessionId && isPaused);
+
+            if (ageMinutes < 90) {
+                if (isLocallyPaused) {
+                    // PAUSADO (Local state override)
+                    statusMarkup = `<span class="bg-amber-500/20 text-amber-400 text-[9px] px-2 py-0.5 rounded-full font-bold border border-amber-500/30">PAUSADO</span>`;
+                    durationText = `<span class="text-[10px] text-amber-400 italic">En espera...</span>`;
                 } else {
-                    durationText = `<span class="text-[10px] text-purple-400 italic">Grabando...</span>`;
+                    // EN VIVO
+                    statusMarkup = `<span class="bg-purple-500/30 text-purple-300 text-[9px] px-2 py-0.5 rounded-full font-bold border border-purple-500/40 animate-pulse">EN VIVO</span>`;
+                    if (s.chunks_transcribed !== undefined && s.chunks_total !== undefined && s.chunks_total > 0) {
+                        durationText = `<span class="text-[10px] text-purple-400 italic">${s.chunks_transcribed}/${s.chunks_total} chunks</span>`;
+                    } else {
+                        durationText = `<span class="text-[10px] text-purple-400 italic">Grabando...</span>`;
+                    }
                 }
             } else {
-                // Sesión huérfana (más de 30 min sin actividad) - badge gris
                 statusMarkup = `<span class="bg-slate-500/20 text-slate-400 text-[9px] px-2 py-0.5 rounded-full font-bold border border-slate-500/30">ABANDONADA</span>`;
                 durationText = `<span class="text-[10px] text-slate-500 italic">Sesión incompleta</span>`;
             }
@@ -557,7 +584,7 @@ async function loadModels() {
         // Add Ollama models (local)
         if (ollamaModels.length > 0) {
             const ollamaGroup = document.createElement('optgroup');
-            ollamaGroup.label = '🖥️ Local (Ollama)';
+            ollamaGroup.label = '🖥️ Local';
             ollamaModels.forEach(m => {
                 const opt = document.createElement('option');
                 opt.value = m;
@@ -572,7 +599,7 @@ async function loadModels() {
         // Add Gemini models (cloud with anonymization)
         if (geminiModels.length > 0) {
             const geminiGroup = document.createElement('optgroup');
-            geminiGroup.label = '☁️ Nube (Gemini + Anonimización)';
+            geminiGroup.label = '☁️ Nube + Anonimización';
             geminiModels.forEach(m => {
                 const opt = document.createElement('option');
                 opt.value = m;
@@ -800,8 +827,88 @@ let audioStream = null;
 let activeSessionId = null;  // Session ID for streaming
 let chunksSent = 0;
 
+// --- PAUSE / RESUME LOGIC ---
+let isPaused = false;
+let pauseStartTime = 0;
+let totalPausedTime = 0;
+
 async function toggleRecording() {
-    if (!mediaRecorder || mediaRecorder.state === 'inactive') {
+    // If we are recording (or paused), STOP everything
+    if (mediaRecorder && (mediaRecorder.state === 'recording' || isPaused)) {
+        // Stop recording
+        if (chunkingInterval) {
+            clearInterval(chunkingInterval);
+            chunkingInterval = null;
+        }
+
+        // Stop current MediaRecorder (triggers final chunk upload)
+        if (mediaRecorder && mediaRecorder.state === 'recording') {
+            mediaRecorder.stop();
+        }
+
+        // Stop all tracks
+        if (audioStream) {
+            audioStream.getTracks().forEach(t => t.stop());
+            audioStream = null;
+        }
+
+        // Reset UI
+        document.getElementById('record-card').classList.remove('border-rose-500', 'border-amber-500');
+
+        // Reset Icon to Microphone
+        document.getElementById('record-icon-bg').innerHTML = `
+            <svg class="w-8 h-8 text-rose-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                    d="M19 11a7 7 0 01-7 7m0 0a7 7 0 01-7-7m7 7v4m0 0H8m4 0h4m-4-8a3 3 0 01-3-3V5a3 3 0 116 0v6a3 3 0 01-3 3z">
+                </path>
+            </svg>
+        `;
+
+        document.getElementById('record-title').innerText = "Grabar en Vivo";
+        document.getElementById('record-title').classList.remove('text-amber-500');
+        document.getElementById('record-timer-text').innerText = "Inicia grabación directa";
+        clearInterval(recordingInterval);
+
+        // Hide Pause Button
+        document.getElementById('pause-btn').classList.add('hidden');
+        resetPauseUI();
+
+        // Hide progress
+        const progressContainer = document.getElementById('chunk-progress-container');
+        progressContainer.classList.add('hidden');
+
+        // Send finish signal to server after last chunk uploads
+        setTimeout(async () => {
+            if (activeSessionId && chunksSent > 0) {
+                console.log(`🏁 Finishing session ${activeSessionId} with ${chunksSent} chunks`);
+
+                const formData = new FormData();
+                formData.append('token', authToken);
+                formData.append('total_chunks', chunksSent.toString());
+
+                try {
+                    const finishRes = await fetch(`${API_URL}/recording/${activeSessionId}/finish`, {
+                        method: 'POST',
+                        body: formData
+                    });
+
+                    if (finishRes.ok) {
+                        console.log(`✅ Session ${activeSessionId} finish signal sent`);
+                        loadSessions(selectedPatientId);
+                    }
+                } catch (e) {
+                    console.error("Error finishing session:", e);
+                }
+
+                activeSessionId = null;
+                chunksSent = 0;
+                isPaused = false;
+                totalPausedTime = 0;
+            }
+        }, 500);
+
+    } else {
+        // START RECORDING
         try {
             if (!selectedPatientId || !authToken) {
                 alert("Selecciona un paciente primero");
@@ -826,6 +933,8 @@ async function toggleRecording() {
             const startData = await startRes.json();
             activeSessionId = startData.session_id;
             chunksSent = 0;
+            isPaused = false;
+            totalPausedTime = 0;
             console.log(`📹 Streaming session started: ${activeSessionId}`);
 
             // 2. Get audio stream
@@ -857,95 +966,127 @@ async function toggleRecording() {
             chunkListEl.innerHTML = '';
             progressContainer.classList.remove('hidden');
 
+            // Show Pause Button
+            document.getElementById('pause-btn').classList.remove('hidden');
+            resetPauseUI();
+
             // 3. Start first chunk recorder (streaming mode)
             startStreamingChunkRecorder(audioStream, 0, chunkCountEl, chunkListEl);
 
-            // 4. Set interval to rotate chunks every 30 seconds
-            chunkingInterval = setInterval(() => {
-                if (mediaRecorder && mediaRecorder.state === 'recording') {
-                    const nextChunkIndex = chunksSent;
-                    console.log(`⏱️ Rotating to chunk ${nextChunkIndex + 1}...`);
+            startChunkRotation(chunkCountEl, chunkListEl);
 
-                    // Stop current recorder (triggers upload)
-                    mediaRecorder.stop();
-
-                    // Start new recorder for next chunk
-                    setTimeout(() => {
-                        if (audioStream && audioStream.active) {
-                            startStreamingChunkRecorder(audioStream, nextChunkIndex, chunkCountEl, chunkListEl);
-                        }
-                    }, 100);
-                }
-            }, 30000); // 30 seconds per chunk
+            // Change Icon to STOP (Square)
+            document.getElementById('record-icon-bg').innerHTML = `
+                <svg class="w-8 h-8 text-rose-400" fill="currentColor" viewBox="0 0 24 24">
+                    <path d="M6 6h12v12H6z" />
+                </svg>
+            `;
 
             document.getElementById('record-card').classList.add('border-rose-500');
-            document.getElementById('record-title').innerText = "Detener y Guardar";
+            document.getElementById('record-title').innerText = "Detener o Pausar";
             startTime = Date.now();
-            recordingInterval = setInterval(() => {
-                const diff = Date.now() - startTime;
-                document.getElementById('record-timer-text').innerText = `Grabando: ${Math.floor(diff / 1000)}s`;
-            }, 1000);
+
+            requestAnimationFrame(updateTimer);
 
         } catch (err) {
             console.error(err);
             alert("Error al iniciar grabación: " + err.message);
             activeSessionId = null;
         }
+    }
+}
+
+function startChunkRotation(chunkCountEl, chunkListEl) {
+    if (chunkingInterval) clearInterval(chunkingInterval);
+
+    // Set interval to rotate chunks every 30 seconds
+    chunkingInterval = setInterval(() => {
+        if (mediaRecorder && mediaRecorder.state === 'recording' && !isPaused) {
+            const nextChunkIndex = chunksSent;
+            console.log(`⏱️ Rotating to chunk ${nextChunkIndex + 1}...`);
+
+            // Stop current recorder (triggers upload)
+            mediaRecorder.stop();
+
+            // Start new recorder for next chunk
+            setTimeout(() => {
+                if (audioStream && audioStream.active && !isPaused) {
+                    startStreamingChunkRecorder(audioStream, nextChunkIndex, chunkCountEl, chunkListEl);
+                }
+            }, 100);
+        }
+    }, 30000); // 30 seconds per chunk
+}
+
+function updateTimer() {
+    if ((mediaRecorder && mediaRecorder.state === 'recording') || isPaused) {
+        if (!isPaused) {
+            const diff = Date.now() - startTime - totalPausedTime;
+            document.getElementById('record-timer-text').innerText = `Grabando: ${Math.floor(diff / 1000)}s`;
+        }
+        requestAnimationFrame(updateTimer);
+    }
+}
+
+function togglePause() {
+    if (!activeSessionId) return;
+
+    if (isPaused) {
+        // RESUME
+        isPaused = false;
+        totalPausedTime += (Date.now() - pauseStartTime);
+
+        console.log("▶️ Resuming recording...");
+
+        // Update UI
+        document.getElementById('record-card').classList.replace('border-amber-500', 'border-rose-500');
+        document.getElementById('record-title').classList.remove('text-amber-500');
+        document.getElementById('record-title').innerText = "Detener y Guardar";
+
+        // Restart Timer Display
+        requestAnimationFrame(updateTimer);
+
+        // Reset Pause Button Icon to Pause
+        document.getElementById('pause-icon').innerHTML = `<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 9v6m4-6v6m7-3a9 9 0 11-18 0 9 9 0 0118 0z"></path>`;
+
+        // Start new recorder
+        const chunkCountEl = document.getElementById('chunk-count');
+        const chunkListEl = document.getElementById('chunk-list');
+        startStreamingChunkRecorder(audioStream, chunksSent, chunkCountEl, chunkListEl);
+        startChunkRotation(chunkCountEl, chunkListEl);
+
     } else {
-        // Stop recording
+        // PAUSE
+        isPaused = true;
+        pauseStartTime = Date.now();
+
+        console.log("⏸️ Pausing recording...");
+
+        // Stop current chunk (uploads partial)
+        if (mediaRecorder && mediaRecorder.state === 'recording') {
+            mediaRecorder.stop();
+        }
+
+        // Clear rotation interval
         if (chunkingInterval) {
             clearInterval(chunkingInterval);
             chunkingInterval = null;
         }
 
-        // Stop current MediaRecorder (triggers final chunk upload)
-        if (mediaRecorder && mediaRecorder.state === 'recording') {
-            mediaRecorder.stop();
-        }
+        // Update UI
+        document.getElementById('record-card').classList.replace('border-rose-500', 'border-amber-500');
+        document.getElementById('record-title').classList.add('text-amber-500');
+        document.getElementById('record-title').innerText = "Pausado";
 
-        // Stop all tracks
-        if (audioStream) {
-            audioStream.getTracks().forEach(t => t.stop());
-            audioStream = null;
-        }
-
-        document.getElementById('record-card').classList.remove('border-rose-500');
-        document.getElementById('record-title').innerText = "Grabar en Vivo";
-        document.getElementById('record-timer-text').innerText = "Inicia grabación directa";
-        clearInterval(recordingInterval);
-
-        // Hide progress
-        const progressContainer = document.getElementById('chunk-progress-container');
-        progressContainer.classList.add('hidden');
-
-        // Send finish signal to server after last chunk uploads
-        setTimeout(async () => {
-            if (activeSessionId && chunksSent > 0) {
-                console.log(`🏁 Finishing session ${activeSessionId} with ${chunksSent} chunks`);
-
-                const formData = new FormData();
-                formData.append('token', authToken);
-                formData.append('total_chunks', chunksSent.toString());
-
-                try {
-                    const finishRes = await fetch(`${API_URL}/recording/${activeSessionId}/finish`, {
-                        method: 'POST',
-                        body: formData
-                    });
-
-                    if (finishRes.ok) {
-                        console.log(`✅ Session ${activeSessionId} finish signal sent`);
-                        loadSessions(selectedPatientId);
-                    }
-                } catch (e) {
-                    console.error("Error finishing session:", e);
-                }
-
-                activeSessionId = null;
-                chunksSent = 0;
-            }
-        }, 500);
+        // Change Pause Button Icon to Play
+        document.getElementById('pause-icon').innerHTML = `<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M14.752 11.168l-3.197-2.132A1 1 0 0010 9.87v4.263a1 1 0 001.555.832l3.197-2.132a1 1 0 000-1.664z"></path><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z"></path>`;
     }
+}
+
+function resetPauseUI() {
+    isPaused = false;
+    document.getElementById('pause-icon').innerHTML = `<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 9v6m4-6v6m7-3a9 9 0 11-18 0 9 9 0 0118 0z"></path>`;
+    document.getElementById('record-title').classList.remove('text-amber-500');
 }
 
 function startStreamingChunkRecorder(stream, chunkIndex, chunkCountEl, chunkListEl) {
@@ -964,9 +1105,10 @@ function startStreamingChunkRecorder(stream, chunkIndex, chunkCountEl, chunkList
     };
 
     mediaRecorder.onstop = async () => {
+        // Only upload if we have data AND we are still in a valid session
         if (chunkData.length > 0 && activeSessionId) {
             const chunkBlob = new Blob(chunkData, { type: recordingMimeType });
-            const currentChunkIndex = chunksSent;
+            const currentChunkIndex = chunksSent;  // Use current counter
 
             console.log(`📤 Uploading chunk ${currentChunkIndex} (${(chunkBlob.size / 1024).toFixed(1)} KB)...`);
 
@@ -983,17 +1125,19 @@ function startStreamingChunkRecorder(stream, chunkIndex, chunkCountEl, chunkList
                 });
 
                 if (res.ok) {
-                    chunksSent++;
+                    chunksSent++; // Increment counter only on success
                     console.log(`✅ Chunk ${currentChunkIndex} uploaded - transcribing in parallel`);
 
                     // Update visual progress
-                    chunkCountEl.innerText = chunksSent.toString();
+                    if (chunkCountEl) chunkCountEl.innerText = chunksSent.toString();
 
                     // Add visual chunk indicator (green = uploading/transcribing)
-                    const chunkBadge = document.createElement('div');
-                    chunkBadge.className = 'bg-emerald-500/20 text-emerald-400 px-2 py-0.5 rounded text-[10px] font-bold animate-in zoom-in-50 duration-200';
-                    chunkBadge.innerText = `${chunksSent}`;
-                    chunkListEl.appendChild(chunkBadge);
+                    if (chunkListEl) {
+                        const chunkBadge = document.createElement('div');
+                        chunkBadge.className = 'bg-emerald-500/20 text-emerald-400 px-2 py-0.5 rounded text-[10px] font-bold animate-in zoom-in-50 duration-200';
+                        chunkBadge.innerText = `${chunksSent}`;
+                        chunkListEl.appendChild(chunkBadge);
+                    }
                 } else {
                     console.error(`❌ Failed to upload chunk ${currentChunkIndex}`);
                 }
@@ -1004,79 +1148,35 @@ function startStreamingChunkRecorder(stream, chunkIndex, chunkCountEl, chunkList
     };
 
     mediaRecorder.start();
-    console.log(`🎙️ Recording chunk ${chunkIndex} (streaming to server)`);
+    console.log(`🎙️ Recording chunk - streaming active`);
 }
 
-function showConfirmModal(file) { pendingAudioFile = file; document.getElementById('confirm-modal').classList.remove('hidden'); }
+
+// ------------------------------------
+// UI HELPERS (Modals & Navigation)
+// ------------------------------------
+
+function showConfirmModal(file) {
+    pendingAudioFile = file;
+    document.getElementById('confirm-modal').classList.remove('hidden');
+}
+
 function confirmUpload() {
-    // Handle chunked recording (real-time)
-    if (pendingChunks && pendingChunks.length > 0) {
-        uploadChunkedRecording(pendingChunks);
-        pendingChunks = null;
-    }
     // Handle single file upload
-    else if (pendingAudioFile) {
+    if (pendingAudioFile) {
         uploadFile(pendingAudioFile);
         pendingAudioFile = null;
     }
     document.getElementById('confirm-modal').classList.add('hidden');
 }
-function cancelUpload() { pendingAudioFile = null; pendingChunks = null; recordingChunks = []; document.getElementById('confirm-modal').classList.add('hidden'); }
-function showNewPatientModal() { document.getElementById('new-patient-modal').classList.remove('hidden'); }
-function hideNewPatientModal() { document.getElementById('new-patient-modal').classList.add('hidden'); }
 
-
-// Chunked recording modal functions (reuses same modal as file upload)
-
-function showConfirmModalChunked(chunks) {
-    pendingChunks = chunks;
-    pendingAudioFile = null;  // Clear single file mode
-    document.getElementById('confirm-modal').classList.remove('hidden');
-}
-
-function confirmUploadChunked() {
-    if (pendingChunks && pendingChunks.length > 0) {
-        uploadChunkedRecording(pendingChunks);
-        pendingChunks = null;
-    }
+function cancelUpload() {
+    pendingAudioFile = null;
     document.getElementById('confirm-modal').classList.add('hidden');
 }
 
-async function uploadChunkedRecording(chunks) {
-    if (!authToken || !selectedPatientId) return;
-
-    const formData = new FormData();
-    formData.append('token', authToken);
-
-    // Append each chunk as a separate file
-    chunks.forEach((chunk, index) => {
-        formData.append('chunks', chunk);
-    });
-
-    const model = document.getElementById('model-select').value;
-    if (model) formData.append('model', model);
-
-    try {
-        console.log(`📤 Uploading ${chunks.length} chunks for parallel processing...`);
-        const response = await fetch(`${API_URL}/upload/${selectedPatientId}/chunked`, {
-            method: 'POST',
-            body: formData
-        });
-
-        if (response.ok) {
-            const result = await response.json();
-            console.log(`✅ Chunked upload successful. Session: ${result.session_id}, Chunks: ${result.chunks_received}`);
-            loadSessions(selectedPatientId);
-        } else {
-            const error = await response.text();
-            console.error('Upload failed:', error);
-            alert("Error al subir grabación");
-        }
-    } catch (e) {
-        console.error('Upload error:', e);
-        alert("Error al subir grabación: " + e.message);
-    }
-}
+function showNewPatientModal() { document.getElementById('new-patient-modal').classList.remove('hidden'); }
+function hideNewPatientModal() { document.getElementById('new-patient-modal').classList.add('hidden'); }
 
 document.getElementById('audio-input').addEventListener('change', (e) => {
     const file = e.target.files[0];
@@ -1101,3 +1201,4 @@ function goToHome() {
         item.classList.remove('selected');
     });
 }
+

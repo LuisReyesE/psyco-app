@@ -36,12 +36,33 @@ class SessionAnonymizer:
             'DNI': 0, 'TEL': 0, 'EMAIL': 0, 'FECHA': 0, 'DIR': 0,
         }
         
-        # Common false positives to ignore
+        # Common false positives to ignore (Expanded for Clinical Context)
         self.false_positives = {
+            # Verbos comunes y gramática
             "haría", "pensé", "sentí", "suspira", "creí", "quería", "sabía",
             "tendría", "podría", "diría", "sería", "estaría", "vendría",
             "hice", "dije", "vine", "puse", "tuve", "supe", "quise",
-            "dr", "dr.", "psicólogo", "paciente", "metro", "metro.",
+            "porque", "entonces", "luego", "cuando", "donde", "quien", "como",
+            
+            # Roles y Relaciones (Para evitar ocultar contexto familiar)
+            "mamá", "papá", "padre", "madre", "hijo", "hija", "hermano", "hermana",
+            "esposo", "esposa", "pareja", "novio", "novia", 
+            "abuelo", "abuela", "tío", "tía", "primo", "prima", "amigo", "amiga",
+            "dr", "dr.", "psicólogo", "paciente", "terapeuta", "doctor",
+            
+            # Verbos Emocionales/Cognitivos
+            "siento", "sentía", "siente", "sentimos", 
+            "pienso", "piensa", "pensaba", 
+            "creo", "creía", "creemos", 
+            "veo", "oigo", "escucho", "digo", "habla", "dice", 
+            "cuenta", "recuerda", "recuerdo", "olvido", "sufre",
+            
+            # Términos Clínicos y Contexto
+            "ansiedad", "depresión", "angustia", "gustia", "agustia", "terapia", "sesión", 
+            "cita", "consulta", "problema", "trastorno", "miedo", 
+            "pánico", "estrés", "duelo", "trauma", "crisis", "síntoma",
+            "pastilla", "medicamento", "remedio", "dosis", "tratamiento",
+            "metro", "metro.", "calle", "avenida", "casa", "trabajo",
         }
         
         self.speaker_names = set()
@@ -290,13 +311,21 @@ class GeminiProcessor:
             response_text = response.text.strip()
             
             # Parse JSON response
+            # Parse JSON response
             try:
-                # Clean markdown code blocks
-                if response_text.startswith('```'):
-                    response_text = re.sub(r'^```json?\n?', '', response_text)
-                    response_text = re.sub(r'\n?```$', '', response_text)
+                # Robust extraction for "Thinking" models
+                # 1. Remove <think> blocks
+                clean_text = re.sub(r'<think>.*?</think>', '', response_text, flags=re.DOTALL)
                 
-                result = json.loads(response_text)
+                # 2. Extract JSON object
+                json_match = re.search(r'(\{.*\})', clean_text, re.DOTALL)
+                if json_match:
+                    clean_text = json_match.group(1)
+                
+                # 3. Clean markdown
+                clean_text = re.sub(r'```(?:json)?', '', clean_text).replace('```', '').strip()
+                
+                result = json.loads(clean_text)
                 result['_generation_time'] = gen_duration
                 return result
                 
