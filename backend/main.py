@@ -7,7 +7,7 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException, Depends
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, Response
 from fastapi.middleware.cors import CORSMiddleware
 import shutil
 import json
@@ -559,6 +559,119 @@ def get_session_audio(session_id: int, token: str, db: Session = Depends(get_db)
     except Exception as e:
         print(f"Error serving audio: {e}")
         raise HTTPException(status_code=500, detail="Could not retrieve audio")
+
+@app.get("/sessions/{session_id}/pdf")
+def generate_session_pdf(session_id: int, token: str, db: Session = Depends(get_db)):
+    from reportlab.lib import colors
+    from reportlab.lib.pagesizes import A4
+    from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, Frame
+    from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+    from reportlab.lib.units import inch
+    from io import BytesIO
+    from backend.security import decrypt_data
+    
+    # 1. Auth & Data Fetch
+    key = ACTIVE_KEYS.get(token)
+    if not key: raise HTTPException(status_code=401)
+    
+    s = db.query(DBSession).filter(DBSession.id == session_id).first()
+    if not s: raise HTTPException(status_code=404)
+    
+    # 2. Decrypt & Parse
+    data = {}
+    if s.structured_json and "_encrypted" in s.structured_json:
+        try:
+            data = json.loads(decrypt_data(s.structured_json["_encrypted"], key))
+        except: pass
+    
+    clinico = data.get("clinico", {})
+    paciente_data = data.get("paciente", {})
+    patient_name = s.patient.full_name if s.patient else "Desconocido"
+    date_str = s.created_at.strftime("%d/%m/%Y %H:%M")
+    
+    # 3. PDF Construction
+    buffer = BytesIO()
+    doc = SimpleDocTemplate(buffer, pagesize=A4, rightMargin=72, leftMargin=72, topMargin=72, bottomMargin=18)
+    styles = getSampleStyleSheet()
+    
+    # Custom Styles
+    styles.add(ParagraphStyle(name='Header', parent=styles['Heading1'], fontSize=16, textColor=colors.HexColor('#4F46E5')))
+    styles.add(ParagraphStyle(name='SectionTitle', parent=styles['Heading2'], fontSize=12, textColor=colors.HexColor('#6366F1'), spaceAfter=6))
+    styles.add(ParagraphStyle(name='NormalText', parent=styles['Normal'], fontSize=10, leading=14))
+    styles.add(ParagraphStyle(name='Label', parent=styles['Normal'], fontSize=8, textColor=colors.gray, textTransform='uppercase'))
+    styles.add(ParagraphStyle(name='RiskTag', parent=styles['Normal'], fontSize=8, textColor=colors.red, backColor=colors.HexColor('#FEF2F2'), borderColor=colors.red, borderWidth=0.5, borderPadding=2))
+
+    story = []
+    
+    # -- Header --
+    story.append(Paragraph("Session AI | Expediente Clínico", styles['Header']))
+    story.append(Spacer(1, 4))
+    story.append(Paragraph(f"<b>Paciente:</b> {patient_name} &nbsp;|&nbsp; <b>Fecha:</b> {date_str}", styles['NormalText']))
+    story.append(Spacer(1, 20))
+    
+    # -- SOAP Section --
+    story.append(Paragraph("Evolución Clínica (SOAP)", styles['SectionTitle']))
+    
+    # Data cleaning for SOAP table
+    s_text = Paragraph(clinico.get('subjetivo', 'No registrado'), styles['NormalText'])
+    o_text = Paragraph(clinico.get('objetivo', 'No registrado'), styles['NormalText'])
+    a_text = Paragraph(clinico.get('analisis', 'No registrado'), styles['NormalText'])
+    p_text = Paragraph(clinico.get('plan', 'No registrado').replace('\n', '<br/>'), styles['NormalText'])
+    
+    data_table = [
+        [Paragraph("S - Subjetivo", styles['Label']), s_text],
+        [Paragraph("O - Objetivo", styles['Label']), o_text],
+        [Paragraph("A - Análisis", styles['Label']), a_text],
+        [Paragraph("P - Plan", styles['Label']), p_text]
+    ]
+    
+    t = Table(data_table, colWidths=[1*inch, 5.5*inch])
+    t.setStyle(TableStyle([
+        ('VALIGN', (0,0), (-1,-1), 'TOP'),
+        ('LINEBELOW', (0,0), (-1,-2), 0.5, colors.lightgrey),
+        ('BOTTOMPADDING', (0,0), (-1,-1), 12),
+        ('TOPPADDING', (0,0), (-1,-1), 12),
+        ('TEXTCOLOR', (0,0), (0,-1), colors.gray),
+    ]))
+    story.append(t)
+    story.append(Spacer(1, 20))
+    
+    # -- Risks & Analysis (AI Support) --
+    if clinico.get('riesgos'):
+        story.append(Paragraph("Alertas de Riesgo Detectadas", styles['SectionTitle']))
+        risk_text = ", ".join(clinico.get('riesgos', []))
+        story.append(Paragraph(risk_text, styles['NormalText']))
+        story.append(Spacer(1, 10))
+
+    if data.get('sugerencias_ia'):
+        story.append(Paragraph("Sugerencias Asistidas por IA", styles['SectionTitle']))
+        ug_list = data.get('sugerencias_ia', [])
+        for sg in ug_list:
+             story.append(Paragraph(f"• {sg}", styles['NormalText']))
+        story.append(Spacer(1, 20))
+
+    # -- Patient Takeaway --
+    story.append(Paragraph("Resumen para el Paciente", styles['SectionTitle']))
+    if paciente_data.get('puntos_clave'):
+        story.append(Paragraph("<b>Puntos Clave:</b>", styles['NormalText']))
+        for pt in paciente_data.get('puntos_clave', []):
+            story.append(Paragraph(f"• {pt}", styles['NormalText']))
+        story.append(Spacer(1, 6))
+        
+    if paciente_data.get('tarea_semana'):
+        story.append(Paragraph(f"<b>Tarea Semanal:</b> {paciente_data.get('tarea_semana')}", styles['NormalText']))
+
+    # -- Footer / Disclaimer --
+    story.append(Spacer(1, 40))
+    story.append(Paragraph("_" * 40, styles['Normal']))
+    story.append(Paragraph("Firma del Profesional", styles['Normal']))
+    story.append(Spacer(1, 10))
+    story.append(Paragraph("<font size=7 color=grey>Documento generado por Session AI. El contenido clínico es responsabilidad del profesional tratante.</font>", styles['Normal']))
+
+    doc.build(story)
+    
+    buffer.seek(0)
+    return Response(content=buffer.getvalue(), media_type="application/pdf", headers={"Content-Disposition": f"attachment; filename=Sesion_{session_id}.pdf"})
 
 @app.post("/sessions/{session_id}/update")
 def update_session(session_id: int, token: str = Form(...), data: str = Form(...), db: Session = Depends(get_db)):

@@ -268,16 +268,27 @@ class GeminiProcessor:
         import time
         
         system_prompt = (
-            "ACTÚA COMO: Sistema Automático de Documentación Clínica (SADC).\n"
-            "CONTEXTO: Estás procesando transcripciones de sesiones terapéuticas para historias clínicas.\n"
-            "SEGURIDAD: El texto input ya ha sido ANONIMIZADO. Los datos sensibles han sido reemplazados por placeholders (ej. [PER_1]).\n"
-            "TAREA: Redactar una nota de evolución clínica formal, objetiva y profesional basada en la transcripción.\n"
-            "INSTRUCCIONES DE CONTENIDO:\n"
-            "1. NO censures síntomas ni relatos de pacientes. Es crucial para el expediente médico.\n"
-            "2. Mantén un tono clínico, usando terminología psicológica adecuada.\n"
-            "3. Resume la sintomatología, progreso y puntos clave tratados.\n"
-            "FORMATO DE SALIDA (ESTRICTO): Un único objeto JSON válido. NO escribas nada fuera del JSON.\n"
-            '{"nota_clinica": "Texto del párrafo de la nota en prosa continua..."}'
+            "ACTÚA COMO: Sistema de Documentación Médica Profesional.\n"
+            "CONTEXTO: Procesamiento de sesiones clínicas para expedientes médicos legales.\n"
+            "SEGURIDAD: Datos ya anonimizados. NO OMITAS SÍNTOMAS (ej. ideación suicida, autolesiones) ya que es negligencia médica.\n"
+            "TAREA: Generar un INFORME DUAL (Técnico + Paciente).\n"
+            "FORMATO JSON OBLIGATORIO:\n"
+            "{\n"
+            '  "clinico": {\n'
+            '    "subjetivo": "...",\n'
+            '    "objetivo": "...",\n'
+            '    "analisis": "...",\n'
+            '    "plan": "1. [Acuerdo 1]\\n2. [Acuerdo 2] (SOLO lo hablado en sesión)",\n'
+            '    "riesgos": ["Riesgo 1", "Riesgo 2"]\n'
+            '  },\n'
+            '  "paciente": {\n'
+            '    "puntos_clave": ["Insight 1", "Insight 2"],\n'
+            '    "tarea_semana": "..."\n'
+            '  },\n'
+            '  "sugerencias_ia": ["Recomendación 1", "Recomendación 2"],\n'
+            '  "sentimiento": "..."\n'
+            "}\n"
+            "NOTA: El 'plan' debe ser una lista numerada. Tus ideas van en 'sugerencias_ia', NO en 'plan'."
         )
         
         user_prompt = f"Conversación clínica:\n\n{anonymized_text}"
@@ -370,18 +381,20 @@ def process_with_gemini(transcript_text: str, patient_name: str = "Paciente") ->
         result = processor.generate_clinical_note(anonymized_text, patient_name)
         
         if 'error' not in result:
-            # 4. Deanonymize the response
-            if 'nota_clinica' in result:
-                raw_response = result['nota_clinica']
-                print(f"\n--- [AUDITORIA] Respuesta Raw de Gemini (con placeholders) ---\n{raw_response}\n-------------------------------------------------------------")
-                
-                # Verify if placeholders exist in response
-                placeholders_in_response = re.findall(r'\[[A-Z]+_\d+\]', raw_response)
-                print(f"[AUDITORIA] Placeholders detectados en respuesta: {placeholders_in_response}")
-                print(f"[AUDITORIA] Mapa secreto disponible: {list(anonymizer.get_secret_map().keys())}")
-                
-                result['nota_clinica'] = anonymizer.deanonymize(result['nota_clinica'])
-                print(f"\n--- [AUDITORIA] Resultado Final (Des-anonimizado) ---\n{result['nota_clinica'][:100]}...\n-------------------------------------------------------------")
+            # 4. Deanonymize the response (ALL fields)
+            print(f"\n--- [AUDITORIA] Respuesta Raw (con placeholders) ---\n{result}\n----------------")
+            
+            def _deanonymize_recursive(obj):
+                if isinstance(obj, str):
+                    return anonymizer.deanonymize(obj)
+                elif isinstance(obj, list):
+                    return [_deanonymize_recursive(item) for item in obj]
+                elif isinstance(obj, dict):
+                    return {k: _deanonymize_recursive(v) for k, v in obj.items()}
+                return obj
+
+            result = _deanonymize_recursive(result)
+            print(f"\n--- [AUDITORIA] Resultado Final (Des-anonimizado) ---\n{json.dumps(result, indent=2, ensure_ascii=False)[:300]}...\n----------------")
             
             # Add metadata
             result['_provider'] = 'gemini'

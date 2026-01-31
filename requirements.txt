@@ -35,3 +35,6 @@ google-generativeai>=0.8.0
 # NLP - Anonymization (optional, for Gemini mode)
 # NOTE: After installing, run: python -m spacy download es_core_news_lg
 spacy>=3.7.0
+
+# PDF Generation
+reportlab>=4.0.0

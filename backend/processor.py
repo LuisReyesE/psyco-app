@@ -668,10 +668,24 @@ class AudioProcessorManager:
         No anonymization needed - all data stays local.
         """
         system_prompt = (
-            "Eres un asistente psicológico experto. Tu tarea es analizar la conversación y redactar una nota de evolución clínica PROFESIONAL.\n"
-            "Debes responder EXCLUSIVAMENTE con un objeto JSON válido.\n"
-            "Ejemplo de formato esperado:\n"
-            '{"nota_clinica": "El paciente presenta..."}'
+            "Eres un asistente psicológico experto. Tu tarea es generar un INFORME DUAL (Clínico y para el Paciente).\n"
+            "Debes responder EXCLUSIVAMENTE con un objeto JSON válido con esta estructura:\n"
+            "{\n"
+            '  "clinico": {\n'
+            '    "subjetivo": "Lo que el paciente reporta...",\n'
+            '    "objetivo": "Observaciones clínicas...",\n'
+            '    "analisis": "Hipótesis diagnóstica...",\n'
+            '    "plan": "1. Acción uno\\n2. Acción dos\\n3. Acción tres (SOLO acuerdos verbales reales)",\n'
+            '    "riesgos": ["Lista de riesgos detectados (o Ninguno)"]\n'
+            '  },\n'
+            '  "paciente": {\n'
+            '    "puntos_clave": ["Idea 1", "Idea 2"],\n'
+            '    "tarea_semana": "Tarea motivadora..."\n'
+            '  },\n'
+            '  "sugerencias_ia": ["Sugerencia 1", "Sugerencia 2"],\n'
+            '  "sentimiento": "Estado (ej. Ansioso)"\n'
+            "}\n"
+            "IMPORTANTE: El campo 'plan' DEBE ser una lista numerada con saltos de línea. NO mezcles tus sugerencias en el plan."
         )
         
         user_prompt = f"Conversación clínica:\n\n{transcript}\n\nGenera la nota clínica en JSON ahora:"

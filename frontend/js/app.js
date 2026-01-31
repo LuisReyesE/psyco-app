@@ -399,7 +399,21 @@ async function checkAndUpdateSessions() {
     }
 }
 
-// Función para notificación visual (Toast)
+// --- PDF EXPORT ---
+async function downloadPDF() {
+    if (!currentSessionId || !authToken) return;
+
+    // Create a temporary link to trigger download
+    const link = document.createElement('a');
+    link.href = `${API_URL}/sessions/${currentSessionId}/pdf?token=${authToken}`;
+    link.target = '_blank'; // Open in new tab or trigger download
+    link.download = `Session_${currentSessionId}.pdf`;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+}
+
+// --- VISUAL TOAST ---
 function showVisualToast(message) {
     const toast = document.createElement('div');
     toast.className = "fixed top-8 right-8 bg-emerald-600 text-white px-6 py-4 rounded-2xl shadow-2xl z-[200] animate-in slide-in-from-top-10 duration-500 font-bold flex items-center gap-3 border border-emerald-400/30";
@@ -724,6 +738,36 @@ async function uploadFile(file) {
     } catch (e) { alert("Error al subir"); }
 }
 
+// --- NEW UI FUNCTIONS ---
+
+function switchTab(tabId) {
+    // Buttons
+    document.getElementById('tab-btn-clinico').className = tabId === 'clinico'
+        ? "flex-1 py-3 text-[10px] uppercase font-bold tracking-wider text-indigo-400 border-b-2 border-indigo-500 bg-indigo-500/5 transition-all"
+        : "flex-1 py-3 text-[10px] uppercase font-bold tracking-wider text-slate-500 border-b-2 border-transparent hover:text-slate-300 transition-all";
+
+    document.getElementById('tab-btn-paciente').className = tabId === 'paciente'
+        ? "flex-1 py-3 text-[10px] uppercase font-bold tracking-wider text-indigo-400 border-b-2 border-indigo-500 bg-indigo-500/5 transition-all"
+        : "flex-1 py-3 text-[10px] uppercase font-bold tracking-wider text-slate-500 border-b-2 border-transparent hover:text-slate-300 transition-all";
+
+    // Views
+    document.getElementById('view-clinico').classList.toggle('hidden', tabId !== 'clinico');
+    document.getElementById('view-paciente').classList.toggle('hidden', tabId !== 'paciente');
+}
+
+function copyPatientSummary() {
+    const points = document.getElementById('pat-points').value;
+    const task = document.getElementById('pat-task').value;
+
+    const niceText = `🌟 *Resumen de tu Sesión*\n\n🧠 *Puntos Clave:*\n${points}\n\n📝 *Tu Misión Semanal:*\n${task}\n\n_Recuerda: El progreso es paso a paso. ¡Nos vemos la próxima!_`;
+
+    navigator.clipboard.writeText(niceText).then(() => {
+        alert("¡Copiado! Listo para pegar en WhatsApp.");
+    });
+}
+
+// --- UPDATED SESSION LOGIC ---
+
 async function openSession(id) {
     currentSessionId = id;
     const player = document.getElementById('modal-audio-player');
@@ -732,25 +776,116 @@ async function openSession(id) {
     // Reset UI
     player.src = '';
     playBtn.innerHTML = `<svg class="w-4 h-4 text-white" fill="currentColor" viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg>`;
+    switchTab('clinico'); // Default tab
+
+    // Reset Fields
+    document.getElementById('soap-s').value = '';
+    document.getElementById('soap-o').value = '';
+    document.getElementById('soap-a').value = '';
+    document.getElementById('soap-p').value = '';
+    document.getElementById('pat-points').value = '';
+    document.getElementById('pat-task').value = '';
+    document.getElementById('risks-container').innerHTML = '';
+    document.getElementById('sentiment-badge').innerText = 'Estado: --';
+    document.getElementById('sentiment-badge').className = 'px-2.5 py-1 rounded-md bg-slate-800 text-[10px] uppercase font-bold text-slate-400 border border-slate-700';
 
     try {
         const response = await fetch(`${API_URL}/sessions/${id}?token=${authToken}`);
         if (response.status === 401) return handleUnauthorized();
         const data = await response.json();
 
+        // 1. Transcript
         document.getElementById('session-date-display').innerText = `Sesión del: ${new Date(data.created_at).toLocaleString()}`;
-        document.getElementById('modal-transcript').innerText = data.transcription_raw || "Procesando...";
+        document.getElementById('modal-transcript').innerText = data.transcription_raw || "Esperando transcripción...";
 
+        // 2. Audio
+        if (data.status === 'completed' || data.status === 'transcribed') {
+            player.src = `${API_URL}/sessions/${id}/audio?token=${authToken}`;
+        }
+
+        // 3. Analysis Loading State
+        const loader = document.getElementById('analysis-loader');
+        const isProcessing = ['queued', 'transcribing', 'analyzing', 'securing'].includes(data.status);
+        loader.classList.toggle('hidden', !isProcessing);
+
+        // Disable inputs if processing
+        const inputs = document.querySelectorAll('#view-clinico textarea, #view-paciente textarea');
+        inputs.forEach(el => el.disabled = isProcessing);
+
+
+        // 4. Fill Data (if available)
         const struct = data.structured_json || {};
+
+        // Badge Info
         const badge = document.getElementById('model-badge');
         badge.innerText = struct._model_file ? `IA: ${struct._model_file}` : 'IA';
         badge.classList.remove('hidden');
 
-        const notaArea = document.getElementById('edit-nota-clinica');
-        notaArea.value = struct.nota_clinica || "Analizando...";
+        // --- DUAL MODE HANDLING ---
+        if (struct.clinico || struct.paciente) {
+            // New Dual Structure
+            const clin = struct.clinico || {};
+            const pat = struct.paciente || {};
+            const suggestions = struct.sugerencias_ia || []; // New field
 
-        // Setup Audio Stream
-        player.src = `${API_URL}/sessions/${id}/audio?token=${authToken}`;
+            document.getElementById('soap-s').value = clin.subjetivo || '';
+            document.getElementById('soap-o').value = clin.objetivo || '';
+            document.getElementById('soap-a').value = clin.analisis || '';
+            document.getElementById('soap-p').value = clin.plan || '';
+
+            // Risks
+            const rContainer = document.getElementById('risks-container');
+            rContainer.innerHTML = '';
+            if (clin.riesgos && Array.isArray(clin.riesgos)) {
+                clin.riesgos.forEach(r => {
+                    const div = document.createElement('div');
+                    const isSafe = r.toLowerCase().includes('ninguno') || r.toLowerCase().includes('bajo') || r.toLowerCase().includes('no se detecta');
+                    div.className = `p-2 rounded border text-[10px] font-bold ${isSafe ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20' : 'bg-rose-500/10 text-rose-300 border-rose-500/20'}`;
+                    div.innerText = r;
+                    rContainer.appendChild(div);
+                });
+            } else {
+                rContainer.innerHTML = '<span class="text-xs text-slate-500 italic">No evaluado</span>';
+            }
+
+            // Suggestions (New)
+            const sList = document.getElementById('suggestions-list');
+            if (sList) {
+                sList.innerHTML = '';
+                if (suggestions.length > 0) {
+                    suggestions.forEach(s => {
+                        const li = document.createElement('li');
+                        li.innerText = s;
+                        sList.appendChild(li);
+                    });
+                } else {
+                    sList.innerHTML = '<span class="text-[10px] text-slate-600 italic">Sin sugerencias adicionales</span>';
+                }
+            }
+
+            // Patient
+            if (pat.puntos_clave && Array.isArray(pat.puntos_clave)) {
+                document.getElementById('pat-points').value = pat.puntos_clave.map(p => `• ${p}`).join('\n');
+            }
+            document.getElementById('pat-task').value = pat.tarea_semana || '';
+
+            // Sentiment
+            if (struct.sentimiento) {
+                const sBadge = document.getElementById('sentiment-badge');
+                // Simple mapping for excitement/color
+                let colorClass = 'bg-slate-800 text-slate-300 border-slate-700';
+                if (struct.sentimiento.match(/ansioso|triste|preocupado|angustiado/i)) colorClass = 'bg-amber-900/30 text-amber-200 border-amber-500/30';
+                else if (struct.sentimiento.match(/feliz|esperanzado|motivado|tranquilo/i)) colorClass = 'bg-emerald-900/30 text-emerald-200 border-emerald-500/30';
+
+                sBadge.innerText = struct.sentimiento;
+                sBadge.setAttribute('class', `px-3 py-2 rounded-lg text-xs font-medium border ${colorClass}`);
+            }
+
+        } else if (struct.nota_clinica) {
+            // Legacy / Fallback (Simple Note)
+            document.getElementById('soap-s').value = struct.nota_clinica;
+            document.getElementById('soap-o').value = "--- Migrado de versión anterior ---";
+        }
 
         // Icon toggle logic
         playBtn.onclick = () => player.paused ? player.play() : player.pause();
@@ -770,16 +905,30 @@ async function openSession(id) {
 }
 
 async function saveSessionEdits(id) {
-    const nota = document.getElementById('edit-nota-clinica').value;
     const btn = document.getElementById('save-btn');
     const originalText = btn.innerText;
-
     btn.innerText = "Guardando...";
     btn.disabled = true;
 
+    // Construct Dual JSON
+    const dataToSave = {
+        clinico: {
+            subjetivo: document.getElementById('soap-s').value,
+            objetivo: document.getElementById('soap-o').value,
+            analisis: document.getElementById('soap-a').value,
+            plan: document.getElementById('soap-p').value,
+            riesgos: [] // We don't edit risks via text yet, could preserve original if needed
+        },
+        paciente: {
+            puntos_clave: document.getElementById('pat-points').value.split('\n').map(l => l.replace(/^•\s*/, '')).filter(Boolean),
+            tarea_semana: document.getElementById('pat-task').value
+        }
+        // sentiment preserved in backend or needs hidden field
+    };
+
     const formData = new FormData();
     formData.append('token', authToken);
-    formData.append('data', JSON.stringify({ nota_clinica: nota }));
+    formData.append('data', JSON.stringify(dataToSave));
 
     try {
         const res = await fetch(`${API_URL}/sessions/${id}/update`, {
