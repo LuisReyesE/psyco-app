@@ -13,6 +13,7 @@ from sqlalchemy.orm import Session
 from backend.database import SessionLocal, Session as DBSession
 from backend.security import encrypt_data, encrypt_file
 from backend.config import FFMPEG_DIR
+from backend.licensing import license_manager
 
 # Lazy import for anonymizer (only loaded when Gemini is used)
 _anonymizer_module = None
@@ -163,6 +164,18 @@ class AudioProcessorManager:
                         elif task_type == 'finish':
                             # Finish streaming session: ('finish', session_id, total_chunks, model, key)
                             _, session_id, total_chunks, selected_model, encryption_key = task
+                            
+                            # --- LICENSE SECURITY CHECK ---
+                            if selected_model and selected_model.startswith('gemini'):
+                                db = SessionLocal()
+                                try:
+                                    lic = license_manager.get_license_status(db)
+                                    if lic['tier'] != 'PRO':
+                                        print(f"⚠️ Security Breach Attempt (Stream): FREE user tried Gemini. Downgrading.")
+                                        selected_model = "ollama:gemma2:2b" 
+                                finally:
+                                    db.close()
+                                    
                             self._process_finish_session_task(session_id, total_chunks, selected_model, encryption_key)
                     
                     elif len(task) == 4:
@@ -173,6 +186,21 @@ class AudioProcessorManager:
                     else:
                         # Normal single-file task: (session_id, model, key)
                         session_id, selected_model, encryption_key = task
+                        
+                        # --- LICENSE SECURITY CHECK ---
+                        # Prevent FREE users from using Gemini manually via API injection
+                        if selected_model and selected_model.startswith('gemini'):
+                            db = SessionLocal()
+                            try:
+                                lic = license_manager.get_license_status(db)
+                                if lic['tier'] != 'PRO':
+                                    print(f"⚠️ Security Breach Attempt: FREE user tried Gemini. Downgrading to Ollama.")
+                                    # Fallback to a default local model or error
+                                    # Option 1: Force safe local model
+                                    selected_model = "ollama:gemma2:2b" 
+                            finally:
+                                db.close()
+
                         self._process_single_task(session_id, selected_model, encryption_key)
                         
                 except Exception as e:
@@ -664,41 +692,43 @@ class AudioProcessorManager:
 
     def _process_with_ollama(self, transcript: str, model_name: str, transcribe_duration: float) -> dict:
         """
-        Process transcript with local Ollama model.
+        Process transcript with local Ollama model (FREE tier).
         No anonymization needed - all data stays local.
+        Generates only nota_clinica_free (simple paragraph summary).
         """
         system_prompt = (
-            "Eres un asistente psicológico experto. Tu tarea es generar un INFORME DUAL (Clínico y para el Paciente).\n"
-            "Debes responder EXCLUSIVAMENTE con un objeto JSON válido con esta estructura:\n"
+            "Eres un asistente clínico experto. Tu tarea es analizar la sesión terapéutica y generar una nota clínica evolutiva.\n"
+            "\n"
+            "INSTRUCCIONES:\n"
+            "- Redacta UN SOLO PÁRRAFO de máximo 5-7 líneas.\n"
+            "- Usa TERCERA PERSONA y TIEMPO PASADO.\n"
+            "- Integra de forma fluida: estado anímico del paciente, temas centrales abordados, intervención realizada, y compromisos o insights alcanzados.\n"
+            "- NO uses negritas, cursivas ni formato markdown.\n"
+            "- Mantén un tono profesional, claro y directo.\n"
+            "\n"
+            "Responde EXCLUSIVAMENTE con este objeto JSON:\n"
             "{\n"
-            '  "clinico": {\n'
-            '    "subjetivo": "Lo que el paciente reporta...",\n'
-            '    "objetivo": "Observaciones clínicas...",\n'
-            '    "analisis": "Hipótesis diagnóstica...",\n'
-            '    "plan": "1. Acción uno\\n2. Acción dos\\n3. Acción tres (SOLO acuerdos verbales reales)",\n'
-            '    "riesgos": ["Lista de riesgos detectados (o Ninguno)"]\n'
-            '  },\n'
-            '  "paciente": {\n'
-            '    "puntos_clave": ["Idea 1", "Idea 2"],\n'
-            '    "tarea_semana": "Tarea motivadora..."\n'
-            '  },\n'
-            '  "sugerencias_ia": ["Sugerencia 1", "Sugerencia 2"],\n'
-            '  "sentimiento": "Estado (ej. Ansioso)"\n'
-            "}\n"
-            "IMPORTANTE: El campo 'plan' DEBE ser una lista numerada con saltos de línea. NO mezcles tus sugerencias en el plan."
+            '  "nota_clinica_free": "El paciente se presentó con [estado anímico] relacionado con [tema central]. Durante la sesión se abordó [intervención]. Se acordó [compromiso/insight]."\n'
+            "}"
         )
         
-        user_prompt = f"Conversación clínica:\n\n{transcript}\n\nGenera la nota clínica en JSON ahora:"
+        user_prompt = f"Conversación clínica:\n\n{transcript}\n\nGenera la nota clínica evolutiva en JSON ahora:"
         
         try:
             start_gen = time.time()
-            print(f"[OLLAMA] Generando con {model_name}...")
+            print(f"[OLLAMA] Generando nota clínica FREE con {model_name}...")
             response = ollama.generate(
                 model=model_name, 
                 system=system_prompt, 
                 prompt=user_prompt, 
                 format='json', 
-                options={'temperature': 0.3} # Un poco mas de creatividad para evitar repeticion
+                options={
+                    'temperature': 0.2,
+                    'num_ctx': 4096,
+                    'num_predict': 512,  # Reduced - only need a paragraph
+                    'top_k': 20,
+                    'top_p': 0.9
+                } 
             )
             gen_duration = round(time.time() - start_gen, 2)
             
@@ -719,8 +749,8 @@ class AudioProcessorManager:
                 clean_text = re.sub(r'```(?:json)?', '', clean_text).replace('```', '').strip()
                 
                 data = json.loads(clean_text)
-                
-                # Add metrics
+
+                # Add metrics (NO license restrictions - restrictions are now UI-level only)
                 data["_metrics"] = {
                     "transcription_time": transcribe_duration,
                     "generation_time": gen_duration,

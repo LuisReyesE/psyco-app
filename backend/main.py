@@ -22,6 +22,7 @@ from backend.security import (
     get_password_hash, verify_password, derive_key, 
     encrypt_data, decrypt_data, generate_recovery_code
 )
+from backend.licensing import license_manager
 from cryptography.fernet import Fernet
 
 # -------------------------------------------------------------------
@@ -232,6 +233,11 @@ async def upload_audio(
         shutil.copyfileobj(file.file, buffer)
         
     # Create DB Record
+    # 1. Check License Limits
+    limit_check = license_manager.check_usage_limits(db)
+    if not limit_check['allowed']:
+         raise HTTPException(status_code=403, detail=limit_check['reason'])
+
     # We store the temp path initially, processor will encrypt it later
     new_session = DBSession(
         patient_id=patient_id,
@@ -264,6 +270,11 @@ async def start_recording_session(
     key = ACTIVE_KEYS.get(token)
     if not key:
         raise HTTPException(status_code=401)
+    
+    # 1. Check License Limits
+    limit_check = license_manager.check_usage_limits(db)
+    if not limit_check['allowed']:
+         raise HTTPException(status_code=403, detail=limit_check['reason'])
     
     # Create DB Record for streaming session
     new_session = DBSession(
@@ -576,8 +587,10 @@ def generate_session_pdf(session_id: int, token: str, db: Session = Depends(get_
     
     s = db.query(DBSession).filter(DBSession.id == session_id).first()
     if not s: raise HTTPException(status_code=404)
+
+    # Note: License restriction moved to UI-level (PRO tabs only)
     
-    # 2. Decrypt & Parse
+    # Decrypt & Parse
     data = {}
     if s.structured_json and "_encrypted" in s.structured_json:
         try:
@@ -796,6 +809,18 @@ def health_check():
 # -------------------------------------------------------------------
 # SYSTEM BACKUP & RESTORE
 # -------------------------------------------------------------------
+
+# -------------------------------------------------------------------
+# LICENSE MANAGEMENT
+# -------------------------------------------------------------------
+
+@app.get("/system/license")
+def get_license_info(force: bool = False, db: Session = Depends(get_db)):
+    return license_manager.get_license_status(db, force_cloud_check=force)
+
+@app.post("/system/license")
+def activate_license(key: str = Form(...), db: Session = Depends(get_db)):
+    return license_manager.activate_license(key, db)
 
 @app.get("/system/backup")
 def create_system_backup(token: str):

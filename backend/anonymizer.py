@@ -271,14 +271,21 @@ class GeminiProcessor:
             "ACTÚA COMO: Sistema de Documentación Médica Profesional.\n"
             "CONTEXTO: Procesamiento de sesiones clínicas para expedientes médicos legales.\n"
             "SEGURIDAD: Datos ya anonimizados. NO OMITAS SÍNTOMAS (ej. ideación suicida, autolesiones) ya que es negligencia médica.\n"
-            "TAREA: Generar un INFORME DUAL (Técnico + Paciente).\n"
+            "TAREA: Generar un INFORME DUAL (Técnico + Paciente) estrictamente estructurado en JSON.\n"
+            "INSTRUCCIONES DE FORMATO (TEXTO PLANO):\n"
+            "- NO uses negritas (**texto**) ni sintaxis markdown.\n"
+            "- Para 'subjetivo' y 'objetivo': redacta PÁRRAFOS FLUIDOS, NO viñetas.\n"
+            "- Para 'analisis': un párrafo integrador con hipótesis clínica.\n"
+            "- Para 'plan': usa lista numerada (1., 2., 3.).\n"
+            "- Mantén un tono técnico y profesional.\n"
+            "\n"
             "FORMATO JSON OBLIGATORIO:\n"
             "{\n"
             '  "clinico": {\n'
-            '    "subjetivo": "...",\n'
-            '    "objetivo": "...",\n'
-            '    "analisis": "...",\n'
-            '    "plan": "1. [Acuerdo 1]\\n2. [Acuerdo 2] (SOLO lo hablado en sesión)",\n'
+            '    "subjetivo": "Párrafo fluido describiendo lo que el paciente reporta (S). Sin viñetas.",\n'
+            '    "objetivo": "Párrafo fluido con observaciones de conducta y estado mental (O). Sin viñetas.",\n'
+            '    "analisis": "Párrafo con evaluación e hipótesis clínica integradora (A).",\n'
+            '    "plan": "1. Primer paso\\n2. Segundo paso\\n3. Tercer paso",\n'
             '    "riesgos": ["Riesgo 1", "Riesgo 2"]\n'
             '  },\n'
             '  "paciente": {\n'
@@ -288,7 +295,7 @@ class GeminiProcessor:
             '  "sugerencias_ia": ["Recomendación 1", "Recomendación 2"],\n'
             '  "sentimiento": "..."\n'
             "}\n"
-            "NOTA: El 'plan' debe ser una lista numerada. Tus ideas van en 'sugerencias_ia', NO en 'plan'."
+            "NOTA: El 'plan' debe ser lista numerada. Tus sugerencias clínicas van en 'sugerencias_ia'."
         )
         
         user_prompt = f"Conversación clínica:\n\n{anonymized_text}"
@@ -307,7 +314,12 @@ class GeminiProcessor:
         
         try:
             start_time = time.time()
-            response = self.model.generate_content(full_prompt, safety_settings=safety_settings)
+            generation_config = {"temperature": 0.1, "top_p": 0.95, "max_output_tokens": 8192}
+            response = self.model.generate_content(
+                full_prompt, 
+                safety_settings=safety_settings,
+                generation_config=generation_config
+            )
             gen_duration = round(time.time() - start_time, 2)
             
             # Check if response was blocked or empty

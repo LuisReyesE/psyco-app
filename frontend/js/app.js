@@ -22,8 +22,14 @@ let hasActiveProcessing = false;
 let completedSessionsList = new Set(); // Para rastrear cuáles ya notificamos
 let isFirstLoad = true;
 
+// License State
+let currentLicenseTier = 'FREE';
+
 // Initial load
 document.addEventListener('DOMContentLoaded', async () => {
+    // 0. Check License
+    await checkLicenseStatus();
+
     // 1. Verificar registro/autenticación PRIMERO (loading screen visible)
     await checkRegistration();
 
@@ -618,7 +624,13 @@ async function loadModels() {
                 const opt = document.createElement('option');
                 opt.value = m;
                 const displayName = m.replace('gemini:', '');
-                opt.innerText = `🔒 ${displayName}`;
+
+                if (currentLicenseTier !== 'PRO') {
+                    opt.disabled = true;
+                    opt.innerText = `🔒 ${displayName} (PRO)`;
+                } else {
+                    opt.innerText = `🛡️ ${displayName}`;
+                }
                 geminiGroup.appendChild(opt);
             });
             select.appendChild(geminiGroup);
@@ -738,10 +750,265 @@ async function uploadFile(file) {
     } catch (e) { alert("Error al subir"); }
 }
 
+// --- SUBSCRIPTION MANAGEMENT ---
+
+let subscriptionData = null;  // Cache de datos de suscripción
+
+async function checkLicenseStatus() {
+    try {
+        const res = await fetch(`${API_URL}/system/license`);
+        const data = await res.json();
+        currentLicenseTier = data.tier || 'FREE';
+        subscriptionData = data;  // Cache full data
+        updateSubscriptionUI();
+    } catch (e) {
+        console.warn("Subscription check failed", e);
+    }
+}
+
+function updateSubscriptionUI() {
+    const statusText = document.getElementById('subscription-status-text');
+    const inputContainer = document.getElementById('subscription-input-container');
+    const expiringAlert = document.getElementById('subscription-expiring');
+    const daysCountdown = document.getElementById('days-countdown');
+    const lockIconClinico = document.getElementById('lock-icon-clinico');
+    const lockIconPaciente = document.getElementById('lock-icon-paciente');
+
+    if (statusText) {
+        if (currentLicenseTier === 'PRO') {
+            const daysRemaining = subscriptionData?.days_remaining;
+            const email = subscriptionData?.email || '';
+
+            // Check if expiring soon (≤5 days)
+            if (daysRemaining !== null && daysRemaining !== undefined && daysRemaining <= 5) {
+                // Show expiring alert
+                statusText.innerHTML = `Estado: <span class="text-amber-400 font-bold">PRO - ¡Vence pronto!</span>`;
+                if (expiringAlert) {
+                    expiringAlert.classList.remove('hidden');
+                    if (daysCountdown) daysCountdown.innerText = daysRemaining;
+                }
+                if (inputContainer) inputContainer.classList.add('hidden');
+            } else {
+                // Normal PRO status
+                let statusHTML = `Estado: <span class="text-emerald-400 font-bold border border-emerald-500/30 px-2 py-0.5 rounded text-xs">✓ PRO ACTIVA</span>`;
+                if (daysRemaining) {
+                    statusHTML += `<br><span class="text-xs text-slate-500 mt-1 block">Vence en ${daysRemaining} días</span>`;
+                }
+                if (email) {
+                    statusHTML += `<span class="text-xs text-slate-600 block">${email}</span>`;
+                }
+                statusText.innerHTML = statusHTML;
+                if (expiringAlert) expiringAlert.classList.add('hidden');
+                if (inputContainer) inputContainer.classList.add('hidden');
+            }
+
+            // Hide lock icons for PRO tabs
+            if (lockIconClinico) lockIconClinico.classList.add('hidden');
+            if (lockIconPaciente) lockIconPaciente.classList.add('hidden');
+        } else {
+            // FREE status
+            statusText.innerHTML = `Estado: <span class="text-slate-400 font-bold">GRATUITA (FREE)</span>`;
+            if (inputContainer) inputContainer.classList.remove('hidden');
+            if (expiringAlert) expiringAlert.classList.add('hidden');
+
+            // Show lock icons for PRO tabs
+            if (lockIconClinico) lockIconClinico.classList.remove('hidden');
+            if (lockIconPaciente) lockIconPaciente.classList.remove('hidden');
+        }
+    }
+
+    // Update Models (refresh lock status)
+    loadModels();
+}
+
+async function linkSubscriptionEmail() {
+    const email = document.getElementById('subscription-email-input').value.trim();
+    const msg = document.getElementById('subscription-msg');
+
+    if (!email || !email.includes('@')) {
+        if (msg) {
+            msg.classList.remove('hidden');
+            msg.innerText = "Por favor ingresa un email válido";
+            msg.className = "text-xs text-center text-rose-400 font-bold";
+        }
+        return;
+    }
+
+    if (msg) {
+        msg.classList.remove('hidden');
+        msg.innerText = "Verificando suscripción...";
+        msg.className = "text-xs text-center text-slate-400 animate-pulse";
+    }
+
+    const formData = new FormData();
+    formData.append('key', email);  // Backend usa 'key' para compatibilidad
+
+    try {
+        const res = await fetch(`${API_URL}/system/license`, { method: 'POST', body: formData });
+        const data = await res.json();
+
+        if (data.success) {
+            if (msg) {
+                msg.innerText = "¡Email vinculado correctamente!";
+                msg.className = "text-xs text-center text-emerald-400 font-bold";
+            }
+            currentLicenseTier = data.tier;
+            subscriptionData = data;
+            updateSubscriptionUI();
+
+            setTimeout(() => {
+                closeSettingsModal();
+                if (data.tier === 'PRO') {
+                    alert("¡Suscripción PRO activada! Disfruta todas las funciones.");
+                }
+            }, 1000);
+        } else {
+            if (msg) {
+                msg.innerText = data.message || "Email no encontrado";
+                msg.className = "text-xs text-center text-rose-400 font-bold";
+            }
+        }
+    } catch (e) {
+        if (msg) {
+            msg.innerText = "Error de conexión";
+            msg.className = "text-xs text-center text-rose-400 font-bold";
+        }
+    }
+}
+
+function openSubscriptionWeb() {
+    // TODO: Replace with actual subscription web URL
+    const subscriptionUrl = 'https://sessionai.example.com/subscribe';
+
+    // For now, show a placeholder message
+    alert(
+        "🌐 Web de Suscripción\n\n" +
+        "La página de suscripción estará disponible pronto.\n\n" +
+        "Por ahora, contacta al administrador para obtener tu suscripción PRO."
+    );
+
+    // When web is ready, uncomment this:
+    // window.open(subscriptionUrl, '_blank');
+}
+
+async function refreshSubscriptionStatus() {
+    const btn = document.getElementById('refresh-subscription-btn');
+    const statusText = document.getElementById('subscription-status-text');
+
+    // Animate refresh button
+    if (btn) {
+        btn.classList.add('animate-spin');
+        btn.disabled = true;
+    }
+
+    // Show loading state
+    if (statusText) {
+        statusText.innerHTML = `Estado: <span class="text-slate-500 font-mono animate-pulse">ACTUALIZANDO...</span>`;
+    }
+
+    try {
+        // Force cloud check by calling the endpoint with force parameter
+        const res = await fetch(`${API_URL}/system/license?force=true`);
+        const data = await res.json();
+
+        currentLicenseTier = data.tier || 'FREE';
+        subscriptionData = data;
+        updateSubscriptionUI();
+
+        // Show success feedback
+        const msg = document.getElementById('subscription-msg');
+        if (msg) {
+            msg.classList.remove('hidden');
+            msg.innerText = data.tier === 'PRO'
+                ? "✓ Suscripción PRO activa"
+                : "Estado actualizado";
+            msg.className = data.tier === 'PRO'
+                ? "text-xs text-center text-emerald-400 font-bold"
+                : "text-xs text-center text-slate-400";
+
+            setTimeout(() => msg.classList.add('hidden'), 3000);
+        }
+    } catch (e) {
+        console.error("Error refreshing subscription:", e);
+        const msg = document.getElementById('subscription-msg');
+        if (msg) {
+            msg.classList.remove('hidden');
+            msg.innerText = "Error al actualizar";
+            msg.className = "text-xs text-center text-rose-400 font-bold";
+        }
+    } finally {
+        // Stop animation
+        if (btn) {
+            btn.classList.remove('animate-spin');
+            btn.disabled = false;
+        }
+    }
+}
+
+// Alias for backward compatibility
+async function activateLicense() {
+    // Check if input has email or old license key format
+    const emailInput = document.getElementById('subscription-email-input');
+    const oldInput = document.getElementById('license-key-input');
+
+    if (emailInput && emailInput.value) {
+        return linkSubscriptionEmail();
+    } else if (oldInput && oldInput.value) {
+        // Fallback for old license key format (migrate to email)
+        const key = oldInput.value.trim();
+        const msg = document.getElementById('license-msg') || document.getElementById('subscription-msg');
+
+        const formData = new FormData();
+        formData.append('key', key);
+
+        try {
+            const res = await fetch(`${API_URL}/system/license`, { method: 'POST', body: formData });
+            const data = await res.json();
+
+            if (data.success) {
+                currentLicenseTier = data.tier;
+                updateSubscriptionUI();
+            }
+
+            if (msg) {
+                msg.classList.remove('hidden');
+                msg.innerText = data.success ? "¡Activada!" : (data.message || "Error");
+                msg.className = data.success
+                    ? "text-xs text-center text-emerald-400 font-bold"
+                    : "text-xs text-center text-rose-400 font-bold";
+            }
+        } catch (e) {
+            if (msg) {
+                msg.classList.remove('hidden');
+                msg.innerText = "Error de conexión";
+                msg.className = "text-xs text-center text-rose-400 font-bold";
+            }
+        }
+    }
+}
+
+// Alias for old function name
+function updateLicenseUI() {
+    updateSubscriptionUI();
+}
+
 // --- NEW UI FUNCTIONS ---
 
 function switchTab(tabId) {
-    // Buttons
+    // LICENSE CHECK: Pestañas PRO requieren licencia
+    const isProTab = (tabId === 'clinico' || tabId === 'paciente');
+
+    if (isProTab && currentLicenseTier !== 'PRO') {
+        // Abrir modal de configuración para activar licencia
+        openSettingsModal();
+        return; // No cambiar de pestaña
+    }
+
+    // Buttons - 3 tabs (free, clinico, paciente)
+    document.getElementById('tab-btn-free').className = tabId === 'free'
+        ? "flex-1 py-3 text-[10px] uppercase font-bold tracking-wider text-emerald-400 border-b-2 border-emerald-500 bg-emerald-500/5 transition-all"
+        : "flex-1 py-3 text-[10px] uppercase font-bold tracking-wider text-slate-500 border-b-2 border-transparent hover:text-slate-300 transition-all";
+
     document.getElementById('tab-btn-clinico').className = tabId === 'clinico'
         ? "flex-1 py-3 text-[10px] uppercase font-bold tracking-wider text-indigo-400 border-b-2 border-indigo-500 bg-indigo-500/5 transition-all"
         : "flex-1 py-3 text-[10px] uppercase font-bold tracking-wider text-slate-500 border-b-2 border-transparent hover:text-slate-300 transition-all";
@@ -750,7 +1017,8 @@ function switchTab(tabId) {
         ? "flex-1 py-3 text-[10px] uppercase font-bold tracking-wider text-indigo-400 border-b-2 border-indigo-500 bg-indigo-500/5 transition-all"
         : "flex-1 py-3 text-[10px] uppercase font-bold tracking-wider text-slate-500 border-b-2 border-transparent hover:text-slate-300 transition-all";
 
-    // Views
+    // Views - 3 views (free, clinico, paciente)
+    document.getElementById('view-free').classList.toggle('hidden', tabId !== 'free');
     document.getElementById('view-clinico').classList.toggle('hidden', tabId !== 'clinico');
     document.getElementById('view-paciente').classList.toggle('hidden', tabId !== 'paciente');
 }
@@ -776,18 +1044,29 @@ async function openSession(id) {
     // Reset UI
     player.src = '';
     playBtn.innerHTML = `<svg class="w-4 h-4 text-white" fill="currentColor" viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg>`;
-    switchTab('clinico'); // Default tab
+    switchTab('free'); // Default to FREE tab
 
     // Reset Fields
+    document.getElementById('nota-clinica-free').value = '';
     document.getElementById('soap-s').value = '';
     document.getElementById('soap-o').value = '';
     document.getElementById('soap-a').value = '';
     document.getElementById('soap-p').value = '';
     document.getElementById('pat-points').value = '';
     document.getElementById('pat-task').value = '';
-    document.getElementById('risks-container').innerHTML = '';
-    document.getElementById('sentiment-badge').innerText = 'Estado: --';
-    document.getElementById('sentiment-badge').className = 'px-2.5 py-1 rounded-md bg-slate-800 text-[10px] uppercase font-bold text-slate-400 border border-slate-700';
+    const risksContainer = document.getElementById('risks-container');
+    const suggestionsList = document.getElementById('suggestions-list');
+    const sentimentBadge = document.getElementById('sentiment-badge');
+
+    risksContainer.innerHTML = '';
+    suggestionsList.innerHTML = '';
+    sentimentBadge.innerText = 'Estado: --';
+    sentimentBadge.className = 'w-full px-3 py-2.5 rounded-lg bg-slate-800 text-xs font-medium text-slate-300 border border-slate-700';
+
+    // Ensure AI elements visible by default
+    sentimentBadge.parentElement.classList.remove('hidden');
+    risksContainer.parentElement.classList.remove('hidden');
+    suggestionsList.parentElement.classList.remove('hidden');
 
     try {
         const response = await fetch(`${API_URL}/sessions/${id}?token=${authToken}`);
@@ -809,82 +1088,64 @@ async function openSession(id) {
         loader.classList.toggle('hidden', !isProcessing);
 
         // Disable inputs if processing
-        const inputs = document.querySelectorAll('#view-clinico textarea, #view-paciente textarea');
+        const inputs = document.querySelectorAll('#view-free textarea, #view-clinico textarea, #view-paciente textarea');
         inputs.forEach(el => el.disabled = isProcessing);
 
 
         // 4. Fill Data (if available)
-        const struct = data.structured_json || {};
+        const json = data.structured_json || {};
 
         // Badge Info
         const badge = document.getElementById('model-badge');
-        badge.innerText = struct._model_file ? `IA: ${struct._model_file}` : 'IA';
+        badge.innerText = json._model_file ? `IA: ${json._model_file}` : 'IA';
         badge.classList.remove('hidden');
 
-        // --- DUAL MODE HANDLING ---
-        if (struct.clinico || struct.paciente) {
-            // New Dual Structure
-            const clin = struct.clinico || {};
-            const pat = struct.paciente || {};
-            const suggestions = struct.sugerencias_ia || []; // New field
+        // FREE Tab - Nota Clínica Simple
+        document.getElementById('nota-clinica-free').value = json.nota_clinica_free || json.nota_clinica || '';
 
-            document.getElementById('soap-s').value = clin.subjetivo || '';
-            document.getElementById('soap-o').value = clin.objetivo || '';
-            document.getElementById('soap-a').value = clin.analisis || '';
-            document.getElementById('soap-p').value = clin.plan || '';
+        // SOAP Logic (PRO tab)
+        const clinico = json.clinico || {};
+        document.getElementById('soap-s').value = clinico.subjetivo || '';
+        document.getElementById('soap-o').value = clinico.objetivo || '';
+        document.getElementById('soap-a').value = clinico.analisis || '';
+        document.getElementById('soap-p').value = clinico.plan || '';
 
-            // Risks
-            const rContainer = document.getElementById('risks-container');
-            rContainer.innerHTML = '';
-            if (clin.riesgos && Array.isArray(clin.riesgos)) {
-                clin.riesgos.forEach(r => {
-                    const div = document.createElement('div');
-                    const isSafe = r.toLowerCase().includes('ninguno') || r.toLowerCase().includes('bajo') || r.toLowerCase().includes('no se detecta');
-                    div.className = `p-2 rounded border text-[10px] font-bold ${isSafe ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20' : 'bg-rose-500/10 text-rose-300 border-rose-500/20'}`;
-                    div.innerText = r;
-                    rContainer.appendChild(div);
-                });
-            } else {
-                rContainer.innerHTML = '<span class="text-xs text-slate-500 italic">No evaluado</span>';
-            }
+        // Patient Logic
+        const paciente = json.paciente || {};
+        if (paciente.puntos_clave) {
+            const txt = Array.isArray(paciente.puntos_clave) ? paciente.puntos_clave.map(x => `• ${x}`).join('\n') : paciente.puntos_clave;
+            document.getElementById('pat-points').value = txt;
+        }
+        if (paciente.tarea_semana) document.getElementById('pat-task').value = paciente.tarea_semana;
 
-            // Suggestions (New)
-            const sList = document.getElementById('suggestions-list');
-            if (sList) {
-                sList.innerHTML = '';
-                if (suggestions.length > 0) {
-                    suggestions.forEach(s => {
-                        const li = document.createElement('li');
-                        li.innerText = s;
-                        sList.appendChild(li);
-                    });
-                } else {
-                    sList.innerHTML = '<span class="text-[10px] text-slate-600 italic">Sin sugerencias adicionales</span>';
-                }
-            }
+        // RENDER AI Analysis Data (sin restricciones PRO)
 
-            // Patient
-            if (pat.puntos_clave && Array.isArray(pat.puntos_clave)) {
-                document.getElementById('pat-points').value = pat.puntos_clave.map(p => `• ${p}`).join('\n');
-            }
-            document.getElementById('pat-task').value = pat.tarea_semana || '';
+        // Sentiment
+        if (json.sentimiento) {
+            let colorClass = 'bg-slate-800 text-slate-300 border-slate-700';
+            if (json.sentimiento.match(/ansioso|triste|preocupado|angustiado/i)) colorClass = 'bg-amber-900/30 text-amber-200 border-amber-500/30';
+            else if (json.sentimiento.match(/feliz|esperanzado|motivado|tranquilo/i)) colorClass = 'bg-emerald-900/30 text-emerald-200 border-emerald-500/30';
 
-            // Sentiment
-            if (struct.sentimiento) {
-                const sBadge = document.getElementById('sentiment-badge');
-                // Simple mapping for excitement/color
-                let colorClass = 'bg-slate-800 text-slate-300 border-slate-700';
-                if (struct.sentimiento.match(/ansioso|triste|preocupado|angustiado/i)) colorClass = 'bg-amber-900/30 text-amber-200 border-amber-500/30';
-                else if (struct.sentimiento.match(/feliz|esperanzado|motivado|tranquilo/i)) colorClass = 'bg-emerald-900/30 text-emerald-200 border-emerald-500/30';
+            sentimentBadge.innerText = json.sentimiento;
+            sentimentBadge.className = `w-full px-3 py-2.5 rounded-lg text-xs font-medium border ${colorClass}`;
+        }
 
-                sBadge.innerText = struct.sentimiento;
-                sBadge.setAttribute('class', `px-3 py-2 rounded-lg text-xs font-medium border ${colorClass}`);
-            }
+        // Risks
+        if (clinico.riesgos && Array.isArray(clinico.riesgos) && clinico.riesgos.length > 0) {
+            risksContainer.innerHTML = clinico.riesgos.map(r => `
+                <div class="bg-rose-500/10 border border-rose-500/20 px-3 py-2 rounded-lg text-[10px] text-rose-300 flex items-start gap-2">
+                     <span class="mt-0.5">•</span> <span>${r}</span>
+                </div>
+            `).join('');
+        } else {
+            risksContainer.innerHTML = '<span class="text-xs text-slate-500 italic">No detectados</span>';
+        }
 
-        } else if (struct.nota_clinica) {
-            // Legacy / Fallback (Simple Note)
-            document.getElementById('soap-s').value = struct.nota_clinica;
-            document.getElementById('soap-o').value = "--- Migrado de versión anterior ---";
+        // Suggestions
+        if (json.sugerencias_ia && Array.isArray(json.sugerencias_ia) && json.sugerencias_ia.length > 0) {
+            suggestionsList.innerHTML = json.sugerencias_ia.map(s => `<li class="pl-2 border-l-2 border-slate-700 py-0.5">${s}</li>`).join('');
+        } else {
+            suggestionsList.innerHTML = '<span class="text-[10px] text-slate-600 italic">Sin sugerencias</span>';
         }
 
         // Icon toggle logic
@@ -910,8 +1171,9 @@ async function saveSessionEdits(id) {
     btn.innerText = "Guardando...";
     btn.disabled = true;
 
-    // Construct Dual JSON
+    // Construct Full JSON including FREE tab
     const dataToSave = {
+        nota_clinica_free: document.getElementById('nota-clinica-free').value,
         clinico: {
             subjetivo: document.getElementById('soap-s').value,
             objetivo: document.getElementById('soap-o').value,

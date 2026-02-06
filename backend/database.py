@@ -46,6 +46,12 @@ class User(Base):
     
     created_at = Column(DateTime, default=datetime.datetime.now)
 
+    # Licensing System
+    license_tier = Column(String, default="FREE")  # FREE | PRO
+    license_key = Column(String, nullable=True)    # PRO-XXXX-YYYY
+    hardware_id = Column(String, nullable=True)     # To prevent sharing
+    last_license_check = Column(DateTime, nullable=True)
+
 class Patient(Base):
     __tablename__ = "patients"
 

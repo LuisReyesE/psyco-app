@@ -5,6 +5,7 @@
 fastapi==0.115.0
 uvicorn==0.30.6
 python-multipart==0.0.21
+supabase==0.0.21
 
 # Database
 sqlalchemy==2.0.45
