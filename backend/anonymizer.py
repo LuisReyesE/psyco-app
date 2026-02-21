@@ -1,32 +1,44 @@
-"""
-Anonymizer Module for Session AI
----------------------------------
-Provides text anonymization using spaCy NER and Gemini API integration.
-The anonymization flow ensures no PII (Personally Identifiable Information) 
-is sent to cloud services.
-
-Flow:
-1. Transcription text → SessionAnonymizer.anonymize() → Anonymized text
-2. Anonymized text → GeminiProcessor.generate_clinical_note() → Anonymized response
-3. Anonymized response → SessionAnonymizer.deanonymize() → Final response with real data
-"""
-
 import os
 import re
+import sys
 import json
+import time
+import warnings
+# Set console encoding to UTF-8 for Windows
+if sys.platform == "win32":
+    try:
+        sys.stdout.reconfigure(encoding='utf-8')
+        sys.stderr.reconfigure(encoding='utf-8')
+    except AttributeError:
+        pass
+
+# Suppress specific transformers warning that suggests a flag not supported by all versions
+warnings.filterwarnings("ignore", message=".*fix_mistral_regex.*")
+
+# from google import genai
+# from google.genai import types
 from dotenv import load_dotenv
 
-# Load environment variables
 load_dotenv()
 
+# Define PROJECT_ROOT relative to this file (backend/anonymizer.py)
+# This file is in .../psyco-app/backend/anonymizer.py
+# Root is .../psyco-app/
+CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
+PROJECT_ROOT = os.path.dirname(CURRENT_DIR)
 
 class SessionAnonymizer:
     """
-    Anonymizes sensitive data in clinical conversation transcripts.
-    Uses spaCy NER for entity detection and regex patterns for structured data.
+    Hybrid PII anonymizer using:
+    - GLiNER: Zero-shot NER for names, places, organizations (ML-based)
+    - Presidio: Framework for structured PII (regex + context-aware)
+    
+    Replaces older spaCy-only implementation with high-recall hybrid approach.
     """
     
-    _nlp = None  # Class-level model cache (lazy loading)
+    _gliner_model = None  # Class-level cache
+    _analyzer = None
+    _anonymizer_engine = None
     
     def __init__(self):
         self.secret_map = {}
@@ -35,62 +47,220 @@ class SessionAnonymizer:
             'PER': 0, 'LOC': 0, 'ORG': 0,
             'DNI': 0, 'TEL': 0, 'EMAIL': 0, 'FECHA': 0, 'DIR': 0,
         }
-        
-        # Common false positives to ignore (Expanded for Clinical Context)
         self.false_positives = {
             # Verbos comunes y gramática
             "haría", "pensé", "sentí", "suspira", "creí", "quería", "sabía",
             "tendría", "podría", "diría", "sería", "estaría", "vendría",
             "hice", "dije", "vine", "puse", "tuve", "supe", "quise",
             "porque", "entonces", "luego", "cuando", "donde", "quien", "como",
-            
-            # Roles y Relaciones (Para evitar ocultar contexto familiar)
+            # Roles y Relaciones
             "mamá", "papá", "padre", "madre", "hijo", "hija", "hermano", "hermana",
-            "esposo", "esposa", "pareja", "novio", "novia", 
+            "esposo", "esposa", "pareja", "novio", "novia",
             "abuelo", "abuela", "tío", "tía", "primo", "prima", "amigo", "amiga",
             "dr", "dr.", "psicólogo", "paciente", "terapeuta", "doctor",
-            
             # Verbos Emocionales/Cognitivos
-            "siento", "sentía", "siente", "sentimos", 
-            "pienso", "piensa", "pensaba", 
-            "creo", "creía", "creemos", 
-            "veo", "oigo", "escucho", "digo", "habla", "dice", 
+            "siento", "sentía", "siente", "sentimos",
+            "pienso", "piensa", "pensaba",
+            "creo", "creía", "creemos",
+            "veo", "oigo", "escucho", "digo", "habla", "dice",
             "cuenta", "recuerda", "recuerdo", "olvido", "sufre",
-            
-            # Términos Clínicos y Contexto
-            "ansiedad", "depresión", "angustia", "gustia", "agustia", "terapia", "sesión", 
-            "cita", "consulta", "problema", "trastorno", "miedo", 
+            # Términos Clínicos
+            "ansiedad", "depresión", "angustia", "terapia", "sesión",
+            "cita", "consulta", "problema", "trastorno", "miedo",
             "pánico", "estrés", "duelo", "trauma", "crisis", "síntoma",
             "pastilla", "medicamento", "remedio", "dosis", "tratamiento",
-            "metro", "metro.", "calle", "avenida", "casa", "trabajo",
+            "metro", "calle", "avenida", "casa", "trabajo",
+            # Títulos y prefijos (no son PII)
+            "dra", "dra.", "ing", "ing.", "lic", "lic.", "sr", "sr.", "sra", "sra.",
+            "don", "doña", "señor", "señora",
         }
-        
-        self.speaker_names = set()
+
+    def warmup(self):
+        """Force load models into memory (Background Warmup)"""
+        print("[ANONYMIZER] Iniciando pre-carga de modelos (Warmup)...")
+        try:
+            self.get_presidio() # Carga SpaCy + Presidio
+            self.get_gliner()   # Carga GLiNER
+            print("[ANONYMIZER] Warmup completado: Modelos listos en RAM.")
+        except Exception as e:
+            print(f"[ANONYMIZER] Warmup warning: {e}")
     
     @classmethod
-    def get_nlp(cls):
-        """Lazy load spaCy model (only when first needed)"""
-        if cls._nlp is None:
-            import spacy
-            print("[NLP] Cargando modelo de espanol (es_core_news_lg)...")
-            cls._nlp = spacy.load("es_core_news_lg")
-            print("[OK] Modelo spaCy cargado correctamente!")
-        return cls._nlp
+    def get_gliner(cls):
+        """Lazy load GLiNER model from local path or HuggingFace"""
+        if cls._gliner_model is None:
+            # Lazy import to avoid heavy load at startup
+            from gliner import GLiNER
+            from transformers import AutoTokenizer
+            from huggingface_hub import snapshot_download
+            
+            # Define local path
+            local_path = os.path.join(PROJECT_ROOT, "backend", "models", "gliner_multi_v2.1")
+            
+            # Check if local model exists and has files
+            if not os.path.exists(local_path) or not os.listdir(local_path):
+                print(f"[GLiNER] No se encontró modelo en {local_path}.")
+                print("[GLiNER] Descargando modelo 'urchade/gliner_multi-v2.1' a carpeta local...")
+                try:
+                    # Download files to the specific local directory
+                    snapshot_download(repo_id="urchade/gliner_multi-v2.1", local_dir=local_path)
+                    print("[GLiNER] Descarga completada exitosamente.")
+                except Exception as e:
+                    print(f"[ERROR] Falló la descarga del modelo: {e}")
+                    # Fallback to remote cache if local download fails
+                    print("[GLiNER] Intentando carga directa desde HuggingFace (cache)...")
+                    cls._gliner_model = GLiNER.from_pretrained("urchade/gliner_multi-v2.1")
+                    return cls._gliner_model
 
+            print(f"[GLiNER] Cargando modelo DESDE DISCO LOCAL: {local_path}...")
+            # FORCE OFFLINE MODE for this load
+            os.environ["HF_HUB_OFFLINE"] = "1"
+            
+            try:
+                # 1. Check if sentencepiece is actually importable (just for diagnostics)
+                try:
+                    import sentencepiece
+                except ImportError:
+                    print("[WARN] La librería 'sentencepiece' no parece estar disponible. GLiNER requiere esto para modo lento.")
+
+                # 2. Standard local load (Default/Fast Mode)
+                # Reverting to default behavior as GLiNER wrapper doesn't support manual tokenizer injection in this version.
+                # The 'regex' warning is suppressed by filterwarnings above.
+                try:
+                    cls._gliner_model = GLiNER.from_pretrained(local_path, local_files_only=True)
+                    print("[OK] Modelo GLiNER local cargado!")
+                except Exception as e_local:
+                     print(f"[ERROR] Falló carga local: {e_local}")
+                     # If local fails, try remote but re-enable online mode temporarily
+                     os.environ.pop("HF_HUB_OFFLINE", None) 
+                     
+                     print("[GLiNER] Intentando fallback remoto de emergencia...")
+                     try:
+                          cls._gliner_model = GLiNER.from_pretrained("urchade/gliner_multi-v2.1")
+                          print("[OK] Modelo GLiNER remoto cargado!")
+                     except Exception as e3:
+                          print(f"[FATAL] No se pudo cargar GLiNER (Remoto fallo): {e3}")
+                          return None
+
+            except Exception as e_outer:
+                 print(f"[FATAL] Error inesperado en estructura de carga GLiNER: {e_outer}")
+                 return None
+
+        return cls._gliner_model
+    
+    @classmethod 
+    def get_presidio(cls):
+        """Lazy load Presidio analyzer and anonymizer"""
+        if cls._analyzer is None:
+            from presidio_analyzer import AnalyzerEngine, PatternRecognizer, Pattern
+            from presidio_analyzer.nlp_engine import NlpEngineProvider
+            from presidio_anonymizer import AnonymizerEngine
+            
+            print("[Presidio] Configurando motor de análisis para español...")
+            
+            # Configure with spaCy Spanish model
+            configuration = {
+                "nlp_engine_name": "spacy",
+                "models": [{"lang_code": "es", "model_name": "es_core_news_lg"}],
+            }
+            provider = NlpEngineProvider(nlp_configuration=configuration)
+            nlp_engine = provider.create_engine()
+            
+            cls._analyzer = AnalyzerEngine(
+                nlp_engine=nlp_engine,
+                supported_languages=["es"]
+            )
+            
+            # ── Custom Recognizers for Peruvian/Latin American PII ──
+            
+            # DNI Peruano (8 dígitos)
+            dni_pattern = Pattern(name="dni_pattern", regex=r"\b\d{8}\b", score=0.5)
+            dni_context_pattern = Pattern(
+                name="dni_context_pattern",
+                regex=r"(?:DNI|D\.N\.I\.|documento|identidad)[:\s]*(\d{8})\b",
+                score=0.95
+            )
+            dni_recognizer = PatternRecognizer(
+                supported_entity="DNI_PE",
+                patterns=[dni_pattern, dni_context_pattern],
+                context=["DNI", "documento", "identidad", "D.N.I"],
+                supported_language="es",
+                name="PeruvianDNIRecognizer"
+            )
+            
+            # Teléfono Peruano (9 dígitos empezando con 9, o +51)
+            tel_patterns = [
+                Pattern(name="cel_pe", regex=r"\b9\d{8}\b", score=0.7),
+                Pattern(name="cel_pe_intl", regex=r"\+51\s*9\d{8}", score=0.95),
+                Pattern(name="tel_context", regex=r"(?:teléfono|celular|móvil|tel\.?|cel\.?)[:\s]*([\d\s\-\+\(\)]{7,15})", score=0.9),
+            ]
+            tel_recognizer = PatternRecognizer(
+                supported_entity="PHONE_PE",
+                patterns=tel_patterns,
+                context=["teléfono", "celular", "móvil", "llamar", "número", "contacto"],
+                supported_language="es",
+                name="PeruvianPhoneRecognizer"
+            )
+            
+            # Fechas en español
+            date_patterns = [
+                Pattern(name="date_slash", regex=r"\b\d{1,2}[/\-]\d{1,2}[/\-]\d{2,4}\b", score=0.8),
+                Pattern(
+                    name="date_text_es",
+                    regex=r"\b\d{1,2}\s+de\s+(?:enero|febrero|marzo|abril|mayo|junio|julio|agosto|septiembre|octubre|noviembre|diciembre)\s+(?:de\s+)?\d{2,4}\b",
+                    score=0.9
+                ),
+            ]
+            date_recognizer = PatternRecognizer(
+                supported_entity="DATE_ES",
+                patterns=date_patterns,
+                supported_language="es",
+                name="SpanishDateRecognizer"
+            )
+            
+            # Direcciones peruanas
+            dir_patterns = [
+                Pattern(
+                    name="dir_pe",
+                    regex=r"(?:calle|av\.|avenida|jr\.|jirón|psje\.|pasaje)\s+[A-Za-záéíóúñÁÉÍÓÚÑ\s]+\d+[A-Za-z\s,\-]*",
+                    score=0.85
+                ),
+            ]
+            dir_recognizer = PatternRecognizer(
+                supported_entity="ADDRESS_PE",
+                patterns=dir_patterns,
+                context=["vivo", "vivimos", "dirección", "domicilio", "ubicado"],
+                supported_language="es",
+                name="PeruvianAddressRecognizer"
+            )
+            
+            # Add all custom recognizers
+            cls._analyzer.registry.add_recognizer(dni_recognizer)
+            cls._analyzer.registry.add_recognizer(tel_recognizer)
+            cls._analyzer.registry.add_recognizer(date_recognizer)
+            cls._analyzer.registry.add_recognizer(dir_recognizer)
+            
+            cls._anonymizer_engine = AnonymizerEngine()
+            print("[OK] Presidio configurado con recognizers custom (DNI, TEL, FECHA, DIR)!")
+        
+        return cls._analyzer, cls._anonymizer_engine
+    
     def get_or_create_placeholder(self, text: str, label: str) -> str:
-        """Get existing placeholder or create a new one for the given text"""
+        """Get existing placeholder or create a new one"""
         text_normalized = text.strip()
         key = (text_normalized, label)
         
         if key in self.reverse_map:
             return self.reverse_map[key]
         
+        if label not in self.counters:
+            self.counters[label] = 0
         self.counters[label] += 1
         placeholder = f"[{label}_{self.counters[label]}]"
         self.secret_map[placeholder] = text_normalized
         self.reverse_map[key] = placeholder
         return placeholder
-
+    
     def extract_speaker_names(self, text: str) -> set:
         """Extract names used as speakers (format: 'Name: dialogue')"""
         pattern = r'^([A-ZÁÉÍÓÚÑ][a-záéíóúñ]+(?:\s+[A-ZÁÉÍÓÚÑ][a-záéíóúñ]+)*)\s*:'
@@ -99,323 +269,244 @@ class SessionAnonymizer:
             match = re.match(pattern, line.strip())
             if match:
                 speaker = match.group(1)
+                # Filter out generic roles
                 if speaker.lower() not in ['psicólogo', 'paciente', 'doctor', 'terapeuta']:
                     speakers.add(speaker)
-        self.speaker_names = speakers
         return speakers
-
-    def extract_mentioned_names(self, text: str) -> set:
-        """Extract names mentioned in greetings and relational contexts"""
-        mentioned_names = set()
-        patterns = [
-            r'(?:Hola|Buenos días|Buenas tardes|Buenas noches|Bienvenido|Bienvenida),?\s+([A-ZÁÉÍÓÚÑ][a-záéíóúñ]+)',
-            r'(?:señor|señora|don|doña|sr\.|sra\.)\s+([A-ZÁÉÍÓÚÑ][a-záéíóúñ]+)',
-            r'(?:mi|tu|su|nuestro|nuestra)\s+(?:amigo|amiga|hermano|hermana|esposo|esposa|hijo|hija|padre|madre|colega|compañero|compañera)\s+([A-ZÁÉÍÓÚÑ][a-záéíóúñ]+)',
-        ]
-        for pattern in patterns:
-            for match in re.finditer(pattern, text, re.IGNORECASE):
-                name = match.group(1)
-                if name.lower() not in self.false_positives and len(name) > 2:
-                    mentioned_names.add(name)
-        return mentioned_names
-
-    def extract_sensitive_data(self, text: str) -> list:
-        """Extract structured sensitive data using regex patterns"""
-        sensitive_data = []
-        patterns = {
-            'DNI': [
-                r'\b(\d{8})\b',
-                r'(?:DNI|D\.N\.I\.|documento|identidad)[:\s]*(\d{8})\b',
-            ],
-            'TEL': [
-                r'\b(9\d{8})\b',
-                r'(\+51\s*9\d{8})',
-                r'(\(\d{2,3}\)\s*\d{6,8})',
-                r'(\d{2,3}[\-\s]\d{6,8})',
-                r'(?:teléfono|celular|móvil|tel\.?|cel\.?|llamar? al|consultorio al)[:\s]*(\(?\d{2,3}\)?\s*[\-\s]?\d{6,9})',
-            ],
-            'EMAIL': [
-                r'\b([a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,})\b',
-            ],
-            'FECHA': [
-                r'\b(\d{1,2}[/\-]\d{1,2}[/\-]\d{2,4})\b',
-                r'\b(\d{1,2}\s+de\s+(?:enero|febrero|marzo|abril|mayo|junio|julio|agosto|septiembre|octubre|noviembre|diciembre)\s+(?:de\s+)?\d{2,4})\b',
-            ],
-            'DIR': [
-                r'(?:calle|av\.|avenida|jr\.|jirón|psje\.|pasaje)\s+([A-Za-záéíóúñÁÉÍÓÚÑ\s]+\d+[A-Za-z\s,\-]*)',
-            ],
-        }
-        
-        for data_type, pattern_list in patterns.items():
-            for pattern in pattern_list:
-                for match in re.finditer(pattern, text, re.IGNORECASE):
-                    value = match.group(1) if match.lastindex else match.group(0)
-                    if len(value.strip()) >= 4:
-                        sensitive_data.append({
-                            'text': value.strip(),
-                            'start': match.start(1) if match.lastindex else match.start(),
-                            'end': match.end(1) if match.lastindex else match.end(),
-                            'label': data_type
-                        })
-        return sensitive_data
-
-    def anonymize(self, text: str) -> str:
+    
+    def anonymize(self, text: str, known_context: list = None) -> str:
         """
-        Main anonymization method.
+        Main anonymization using GLiNER (NER) + Presidio (structured PII).
         Returns anonymized text with placeholders like [PER_1], [LOC_1], etc.
+        
+        Args:
+            text: The transcript to anonymize.
+            known_context: Optional list of known names (e.g., patient name) to force-anonymize.
         """
-        nlp = self.get_nlp()
-        doc = nlp(text)
+        if not text:
+            return ""
+
         anonymized_text = text
-        target_entities = ["PER", "LOC", "ORG"]
-        
-        # Extract all names and sensitive data
-        speaker_names = self.extract_speaker_names(text)
-        mentioned_names = self.extract_mentioned_names(text)
-        all_names = speaker_names.union(mentioned_names)
-        sensitive_data = self.extract_sensitive_data(text)
-        
         entities_to_replace = []
         
-        # Add regex-detected names
-        for name in all_names:
+        # ── PHASE 0: Known Context (Patient Name Priority) ──
+        if known_context:
+            print(f"[ANONYMIZER] Contexto conocido recibido: {known_context}")
+            for name in known_context:
+                if not name or len(name.strip()) < 3: 
+                    continue
+                
+                # Normalize and split (e.g., "Mateo Mercado" -> ["Mateo Mercado", "Mateo", "Mercado"])
+                name_clean = name.strip()
+                tokens = name_clean.split()
+                variants = [name_clean] + [t for t in tokens if len(t) > 3] # Only parts > 3 chars
+                
+                # Remove duplicates while preserving order
+                variants = list(dict.fromkeys(variants))
+                
+                for variant in variants:
+                    # Case-insensitive search using regex word boundaries
+                    # Escape special regex chars in name just in case
+                    import re
+                    pattern = r'\b' + re.escape(variant) + r'\b'
+                    for match in re.finditer(pattern, text, re.IGNORECASE):
+                        entities_to_replace.append({
+                            'text': text[match.start():match.end()], # Use exact text from doc
+                            'start': match.start(),
+                            'end': match.end(),
+                            'label': 'PER',
+                            'source': 'known_context',
+                            'score': 1.0  # Max priority
+                        })
+
+        # ── PHASE 1: GLiNER Zero-Shot NER ──
+        gliner = self.get_gliner()
+        gliner_entities = []
+
+        if gliner is None:
+             print("[ANONYMIZER] GLiNER no disponible (probablemente offline/sin modelo). Saltando fase GLiNER.")
+        else:
+            gliner_labels = [
+            "person", "location", "organization", 
+            "hospital", "clinic", "company",
+            "city", "district", "country"
+        ]
+        
+            # Implement chunking to avoid truncation warnings (max_len=384 in config)
+            # We use a window size of 300 words (approx) to be safe, or character based.
+            # Simple character chunking with overlap is safer to avoid breaking words if careful, 
+            # but GLiNER works on tokens. Let's use a conservative char limit.
+            CHUNK_SIZE = 2048  # Approx 300-400 words? No, 384 tokens is ~1500 chars (depending on language)
+                               # Warning said 708 tokens -> truncated. 
+                               # Let's use a safe overlap strategy.
+            
+            # Simple overlapping window strategy
+            window_size = 1000  # Characters (conservative, ~200-250 tokens)
+            overlap = 200       # Overlap to catch entities at boundaries
+            
+            text_len = len(text)
+            if text_len <= window_size:
+                 gliner_entities = gliner.predict_entities(text, gliner_labels, threshold=0.4)
+            else:
+                cursor = 0
+                while cursor < text_len:
+                    end = min(cursor + window_size, text_len)
+                    chunk_text = text[cursor:end]
+                    
+                    # Predict on chunk
+                    chunk_entities = gliner.predict_entities(chunk_text, gliner_labels, threshold=0.4)
+                    
+                    # Adjust offsets
+                    for ent in chunk_entities:
+                        ent["start"] += cursor
+                        ent["end"] += cursor
+                        # Deduplicate/Filter later? We simply add all candidates.
+                        # We might get duplicates in overlap regions.
+                        gliner_entities.append(ent)
+                    
+                    if end == text_len:
+                        break
+                        
+                    cursor += (window_size - overlap)
+            
+            # Deduplicate based on start/end to avoid double counting from overlap
+            unique_gliner_entities = []
+            seen_spans = set()
+            for ent in gliner_entities:
+                span = (ent["start"], ent["end"], ent["label"])
+                if span not in seen_spans:
+                    seen_spans.add(span)
+                    unique_gliner_entities.append(ent)
+            
+            gliner_entities = unique_gliner_entities
+        
+        label_mapping = {
+            "person": "PER",
+            "location": "LOC", "city": "LOC", "district": "LOC", "country": "LOC",
+            "organization": "ORG", "hospital": "ORG", "clinic": "ORG", "company": "ORG",
+        }
+        
+        for ent in gliner_entities:
+            ent_text = ent["text"].strip()
+            ent_label = label_mapping.get(ent["label"], "ORG")
+            ent_lower = ent_text.lower().strip().rstrip('.')
+            
+            if ent_lower in self.false_positives or len(ent_text) <= 2:
+                continue
+            
+            # Find position in text
+            for match in re.finditer(re.escape(ent_text), text):
+                entities_to_replace.append({
+                    'text': ent_text,
+                    'start': match.start(),
+                    'end': match.end(),
+                    'label': ent_label,
+                    'source': 'gliner',
+                    'score': ent.get("score", 0)
+                })
+        
+        # ── PHASE 2: Speaker names (regex) ──
+        speaker_names = self.extract_speaker_names(text)
+        for name in speaker_names:
             for match in re.finditer(r'\b' + re.escape(name) + r'\b', text):
                 entities_to_replace.append({
                     'text': name, 'start': match.start(), 'end': match.end(),
-                    'label': 'PER', 'source': 'regex'
+                    'label': 'PER', 'source': 'speaker_regex', 'score': 1.0
                 })
         
-        # Add spaCy NER entities
-        for ent in doc.ents:
-            if ent.label_ in target_entities:
-                ent_text_clean = ent.text.lower().strip().rstrip('.')
-                if ent_text_clean not in self.false_positives and len(ent.text) > 2:
-                    label = 'PER' if ent.text in self.speaker_names else ent.label_
-                    entities_to_replace.append({
-                        'text': ent.text, 'start': ent.start_char, 'end': ent.end_char,
-                        'label': label, 'source': 'spacy'
-                    })
+        # ── PHASE 3: Presidio Structured PII ──
+        analyzer, _ = self.get_presidio()
+        presidio_results = analyzer.analyze(
+            text=text,
+            language="es",
+            entities=[
+                "PERSON", "LOCATION", "ORGANIZATION",
+                "EMAIL_ADDRESS", "PHONE_NUMBER",
+                "DNI_PE", "PHONE_PE", "DATE_ES", "ADDRESS_PE"
+            ],
+            score_threshold=0.4
+        )
         
-        # Add sensitive data patterns
-        for data in sensitive_data:
+        presidio_label_map = {
+            "PERSON": "PER", "LOCATION": "LOC", "ORGANIZATION": "ORG",
+            "EMAIL_ADDRESS": "EMAIL", "PHONE_NUMBER": "TEL",
+            "DNI_PE": "DNI", "PHONE_PE": "TEL", "DATE_ES": "FECHA",
+            "ADDRESS_PE": "DIR",
+        }
+        
+        for result in presidio_results:
+            ent_text = text[result.start:result.end].strip()
+            ent_label = presidio_label_map.get(result.entity_type, "ORG")
+            ent_lower = ent_text.lower().strip().rstrip('.')
+            
+            if ent_lower in self.false_positives or len(ent_text) <= 2:
+                continue
+                
             entities_to_replace.append({
-                'text': data['text'], 'start': data['start'], 'end': data['end'],
-                'label': data['label'], 'source': 'regex_sensitive'
+                'text': ent_text,
+                'start': result.start,
+                'end': result.end,
+                'label': ent_label,
+                'source': 'presidio',
+                'score': result.score
             })
         
-        # Deduplicate by position
-        seen_positions = set()
-        unique_entities = []
-        for ent in entities_to_replace:
-            key = (ent['start'], ent['end'])
-            if key not in seen_positions:
-                seen_positions.add(key)
-                unique_entities.append(ent)
+        # ── PHASE 4: Deduplicate & Merge ──
+        # When overlapping, prefer higher score, then GLiNER > Presidio
+        # Known Context (score 1.0) will naturally win if sorted correctly
+        entities_sorted = sorted(entities_to_replace, key=lambda x: (-x['score'], x['start']))
+        
+        occupied_ranges = []
+        final_entities = []
+        
+        for ent in entities_sorted:
+            s, e = ent['start'], ent['end']
+            # Check overlap with already accepted entities
+            overlaps = False
+            for os_, oe_ in occupied_ranges:
+                if s < oe_ and e > os_:  # overlap check
+                    overlaps = True
+                    break
+            if not overlaps:
+                final_entities.append(ent)
+                occupied_ranges.append((s, e))
         
         # Sort by position (reverse) to replace from end to start
-        entities_sorted = sorted(unique_entities, key=lambda x: x['start'], reverse=True)
+        final_entities.sort(key=lambda x: x['start'], reverse=True)
         
         # Perform replacements
-        for ent in entities_sorted:
+        for ent in final_entities:
             placeholder = self.get_or_create_placeholder(ent['text'], ent['label'])
             start, end = ent['start'], ent['end']
             anonymized_text = anonymized_text[:start] + placeholder + anonymized_text[end:]
+            
+        if self.reverse_map:
+            print(f"\n[ANONYMIZER] Entidades detectadas y protegidas ({len(self.reverse_map)}):")
+            for (orig_text, label), placeholder in self.reverse_map.items():
+                try:
+                    # Solo mostramos el mapeo de seguridad
+                    print(f"   * {placeholder} -> {label}") 
+                except:
+                    pass
+            print(f"[ANONYMIZER] Total entidades protegidas: {len(self.reverse_map)}")
+            print("--------------------------------------------------\n")
+        else:
+             print("\n[ANONYMIZER] No se detectaron entidades sensibles en este fragmento.\n")
         
-        print(f"[ANON] Anonimizacion: {len(unique_entities)} entidades detectadas, {len(self.secret_map)} placeholders unicos")
         return anonymized_text
-
+    
     def deanonymize(self, processed_text: str) -> str:
-        """
-        Restore original values from placeholders.
-        Used after receiving AI response.
-        """
-        restored_text = processed_text
-        for placeholder, original_value in self.secret_map.items():
-            restored_text = restored_text.replace(placeholder, original_value)
-        return restored_text
+        """Restore original values from placeholders"""
+        if not processed_text:
+            return ""
+            
+        restored = processed_text
+        for placeholder, original in self.secret_map.items():
+            restored = restored.replace(placeholder, original)
+        return restored
     
     def get_secret_map(self) -> dict:
-        """Return the secret map for storage"""
         return self.secret_map.copy()
-    
-    def load_secret_map(self, secret_map: dict):
-        """Load a previously saved secret map for deanonymization"""
-        self.secret_map = secret_map.copy()
 
 
-class GeminiProcessor:
-    """
-    Processes anonymized text with Google's Gemini API.
-    Generates clinical notes from session transcripts.
-    """
-    
-    def __init__(self, api_key: str = None):
-        import google.generativeai as genai
-        
-        self.api_key = api_key or os.getenv('GEMINI_API_KEY')
-        if not self.api_key:
-            raise ValueError("GEMINI_API_KEY no configurada. Anadela al archivo .env")
-        
-        genai.configure(api_key=self.api_key)
-        self.model = genai.GenerativeModel('gemini-3-flash-preview')
-        print("[OK] Gemini API configurada correctamente!")
-    
-    def generate_clinical_note(self, anonymized_text: str, patient_name: str = "Paciente") -> dict:
-        """
-        Generate clinical note from anonymized transcript.
-        Returns dict with nota_clinica and metadata.
-        """
-        import time
-        
-        system_prompt = (
-            "ACTÚA COMO: Sistema de Documentación Médica Profesional.\n"
-            "CONTEXTO: Procesamiento de sesiones clínicas para expedientes médicos legales.\n"
-            "SEGURIDAD: Datos ya anonimizados. NO OMITAS SÍNTOMAS (ej. ideación suicida, autolesiones) ya que es negligencia médica.\n"
-            "TAREA: Generar un INFORME DUAL (Técnico + Paciente) estrictamente estructurado en JSON.\n"
-            "INSTRUCCIONES DE FORMATO (TEXTO PLANO):\n"
-            "- NO uses negritas (**texto**) ni sintaxis markdown.\n"
-            "- Para 'subjetivo' y 'objetivo': redacta PÁRRAFOS FLUIDOS, NO viñetas.\n"
-            "- Para 'analisis': un párrafo integrador con hipótesis clínica.\n"
-            "- Para 'plan': usa lista numerada (1., 2., 3.).\n"
-            "- Mantén un tono técnico y profesional.\n"
-            "\n"
-            "FORMATO JSON OBLIGATORIO:\n"
-            "{\n"
-            '  "clinico": {\n'
-            '    "subjetivo": "Párrafo fluido describiendo lo que el paciente reporta (S). Sin viñetas.",\n'
-            '    "objetivo": "Párrafo fluido con observaciones de conducta y estado mental (O). Sin viñetas.",\n'
-            '    "analisis": "Párrafo con evaluación e hipótesis clínica integradora (A).",\n'
-            '    "plan": "1. Primer paso\\n2. Segundo paso\\n3. Tercer paso",\n'
-            '    "riesgos": ["Riesgo 1", "Riesgo 2"]\n'
-            '  },\n'
-            '  "paciente": {\n'
-            '    "puntos_clave": ["Insight 1", "Insight 2"],\n'
-            '    "tarea_semana": "..."\n'
-            '  },\n'
-            '  "sugerencias_ia": ["Recomendación 1", "Recomendación 2"],\n'
-            '  "sentimiento": "..."\n'
-            "}\n"
-            "NOTA: El 'plan' debe ser lista numerada. Tus sugerencias clínicas van en 'sugerencias_ia'."
-        )
-        
-        user_prompt = f"Conversación clínica:\n\n{anonymized_text}"
-        full_prompt = f"{system_prompt}\n\n{user_prompt}"
-        
-        print("[GEMINI] Enviando texto anonimizado a Gemini...")
-        
-        # Configure safety settings to avoid blocking clinical content
-        from google.generativeai.types import HarmCategory, HarmBlockThreshold
-        safety_settings = {
-            HarmCategory.HARM_CATEGORY_HARASSMENT: HarmBlockThreshold.BLOCK_NONE,
-            HarmCategory.HARM_CATEGORY_HATE_SPEECH: HarmBlockThreshold.BLOCK_NONE,
-            HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT: HarmBlockThreshold.BLOCK_NONE,
-            HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT: HarmBlockThreshold.BLOCK_NONE,
-        }
-        
-        try:
-            start_time = time.time()
-            generation_config = {"temperature": 0.1, "top_p": 0.95, "max_output_tokens": 8192}
-            response = self.model.generate_content(
-                full_prompt, 
-                safety_settings=safety_settings,
-                generation_config=generation_config
-            )
-            gen_duration = round(time.time() - start_time, 2)
-            
-            # Check if response was blocked or empty
-            if not response.parts:
-                print(f"[WARN] Gemini bloqueo la respuesta. Finish Reason: {response.prompt_feedback}")
-                return {
-                    'nota_clinica': "Error: El modelo de IA bloqueó la respuesta por políticas de seguridad.",
-                    '_warning': 'Safety Block',
-                    '_generation_time': gen_duration
-                }
-                
-            response_text = response.text.strip()
-            
-            # Parse JSON response
-            # Parse JSON response
-            try:
-                # Robust extraction for "Thinking" models
-                # 1. Remove <think> blocks
-                clean_text = re.sub(r'<think>.*?</think>', '', response_text, flags=re.DOTALL)
-                
-                # 2. Extract JSON object
-                json_match = re.search(r'(\{.*\})', clean_text, re.DOTALL)
-                if json_match:
-                    clean_text = json_match.group(1)
-                
-                # 3. Clean markdown
-                clean_text = re.sub(r'```(?:json)?', '', clean_text).replace('```', '').strip()
-                
-                result = json.loads(clean_text)
-                result['_generation_time'] = gen_duration
-                return result
-                
-            except json.JSONDecodeError:
-                # Fallback: treat entire response as the note
-                return {
-                    'nota_clinica': response_text,
-                    '_warning': 'Formato no estructurado (JSON fallido)',
-                    '_generation_time': gen_duration
-                }
-                
-        except Exception as e:
-            print(f"[ERROR] Error al llamar a Gemini: {e}")
-            return {'error': f'Gemini Error: {str(e)}'}
 
-
-def process_with_gemini(transcript_text: str, patient_name: str = "Paciente") -> tuple:
-    """
-    Complete anonymization + Gemini processing pipeline.
-    
-    Args:
-        transcript_text: Raw transcription text
-        patient_name: Patient name for context
-        
-    Returns:
-        tuple: (final_json, secret_map)
-        - final_json: The clinical note with metadata
-        - secret_map: The placeholder->original mapping for storage
-    """
-    import time
-    
-    # 1. Initialize anonymizer
-    anonymizer = SessionAnonymizer()
-    
-    # 2. Anonymize the transcript
-    print("[ANON] Anonimizando transcripcion...")
-    anonymized_text = anonymizer.anonymize(transcript_text)
-    
-    # 3. Process with Gemini
-    try:
-        processor = GeminiProcessor()
-        result = processor.generate_clinical_note(anonymized_text, patient_name)
-        
-        if 'error' not in result:
-            # 4. Deanonymize the response (ALL fields)
-            print(f"\n--- [AUDITORIA] Respuesta Raw (con placeholders) ---\n{result}\n----------------")
-            
-            def _deanonymize_recursive(obj):
-                if isinstance(obj, str):
-                    return anonymizer.deanonymize(obj)
-                elif isinstance(obj, list):
-                    return [_deanonymize_recursive(item) for item in obj]
-                elif isinstance(obj, dict):
-                    return {k: _deanonymize_recursive(v) for k, v in obj.items()}
-                return obj
-
-            result = _deanonymize_recursive(result)
-            print(f"\n--- [AUDITORIA] Resultado Final (Des-anonimizado) ---\n{json.dumps(result, indent=2, ensure_ascii=False)[:300]}...\n----------------")
-            
-            # Add metadata
-            result['_provider'] = 'gemini'
-            result['_model_file'] = 'gemini-3-flash-preview'
-            result['_anonymized'] = True
-        
-        return result, anonymizer.get_secret_map()
-        
-    except ValueError as e:
-        return {'error': str(e)}, {}
-    except Exception as e:
-        return {'error': f'Processing error: {str(e)}'}, {}

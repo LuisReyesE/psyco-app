@@ -5,7 +5,7 @@ Sistema de suscripciones basado en email (modelo híbrido)
 import os
 import uuid
 import json
-from supabase import create_client, Client
+import threading
 from datetime import datetime, timedelta
 from dotenv import load_dotenv
 from backend.database import SessionLocal, User, Session as DBSession
@@ -27,7 +27,8 @@ class SubscriptionManager:
     """
     
     def __init__(self):
-        self.client: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
+        from supabase import create_client
+        self.client = create_client(SUPABASE_URL, SUPABASE_KEY)
         self.hardware_id = self._get_hardware_id()
         self._last_cloud_check = None
         self._cached_subscription = None
@@ -112,7 +113,7 @@ class SubscriptionManager:
                 
                 # Guardar email vinculado
                 if data.get('email'):
-                    user.license_key = data.get('email')  # Usamos license_key para guardar email
+                    user.email = data.get('email')  
                 
                 db_session.commit()
                 
@@ -138,40 +139,89 @@ class SubscriptionManager:
                 }
             
         except Exception as e:
+            # Check for connection errors (e.g., [Errno 11001] getaddrinfo failed)
+            error_str = str(e)
+            if "getaddrinfo failed" in error_str or "ConnectError" in error_str:
+                 print(f"[SUBSCRIPTION] Offline mode: Could not sync with cloud ({error_str})")
+                 return {"synced": False, "reason": "Offline mode"}
+            
             print(f"[SUBSCRIPTION] Cloud sync error: {e}")
             import traceback
             traceback.print_exc()
             return {"synced": False, "reason": str(e)}
 
+
+    def _run_background_sync(self):
+        """Helper to run cloud sync in a separate thread with its own DB session."""
+        db = SessionLocal()
+        try:
+            result = self.sync_subscription_from_cloud(db)
+            
+            # Logic for auto-retry when offline
+            if result.get("reason") == "Offline mode":
+                print("[SUBSCRIPTION] Offline. Retrying check in 60 seconds...")
+                # Schedule retry without blocking
+                threading.Timer(60.0, self._run_background_sync).start()
+                
+        except Exception as e:
+            print(f"[SUBSCRIPTION] Background sync failed: {e}")
+        finally:
+            db.close()
+
     def get_subscription_status(self, db_session, force_cloud_check: bool = False) -> dict:
         """
         Obtiene el estado actual de la suscripción.
-        Sincroniza con la nube en la primera llamada o si se fuerza.
+        Retorna inmediatamente datos locales.
+        Si es necesario (primer inicio o force), inicia sincronización en background.
         """
-        # Sincronizar en primera llamada o si se fuerza
-        if force_cloud_check or self._last_cloud_check is None:
-            sync_result = self.sync_subscription_from_cloud(db_session)
-            self._last_cloud_check = datetime.now()
-            print(f"[SUBSCRIPTION] Cloud sync result: {sync_result}")
-        
+        # 1. Recuperar estado local inmediatamente
         user = db_session.query(User).first()
-        if not user:
-            return {"tier": "FREE", "active": False}
+        local_tier = user.license_tier if user else "FREE"
+        local_email = user.email if user else None
         
-        # Combinar datos locales con cache de la nube
         result = {
-            "tier": user.license_tier or "FREE",
-            "email": user.license_key,  # Email guardado en license_key
+            "tier": local_tier,
+            "email": local_email,
             "hardware_id": self.hardware_id
         }
         
-        # Agregar datos del cache si existen
         if self._cached_subscription:
-            result["days_remaining"] = self._cached_subscription.get('days_remaining')
-            result["expires_at"] = self._cached_subscription.get('expires_at')
-            result["name"] = self._cached_subscription.get('name')
-            result["expired"] = self._cached_subscription.get('expired', False)
-        
+             result.update({
+                "days_remaining": self._cached_subscription.get('days_remaining'),
+                "expires_at": self._cached_subscription.get('expires_at'),
+                "name": self._cached_subscription.get('name'),
+                "expired": self._cached_subscription.get('expired', False)
+             })
+
+        # 2. Determinar si necesitamos sincronizar
+        if force_cloud_check:
+            # Sincronización síncrona/inmediata requerida
+            self._last_cloud_check = datetime.now()
+            sync_res = self.sync_subscription_from_cloud(db_session)
+            if sync_res.get("synced"):
+                 # Actualizar el resultado in-situ con lo que acaba de guardar en cache
+                 result["tier"] = sync_res.get("tier", sync_res.get("new_tier", result["tier"]))
+                 if self._cached_subscription:
+                     result.update({
+                        "days_remaining": self._cached_subscription.get('days_remaining'),
+                        "expires_at": self._cached_subscription.get('expires_at'),
+                        "name": self._cached_subscription.get('name'),
+                        "expired": self._cached_subscription.get('expired', False)
+                     })
+        elif self._last_cloud_check is None:
+            # Primera vez: asíncrono background sync
+            self._last_cloud_check = datetime.now()
+            
+            thread = threading.Thread(
+                target=self._run_background_sync
+            )
+            thread.daemon = True 
+            thread.start()
+            
+            # Indicar estado de verificación si es la primera vez
+            if result.get("tier") == "FREE" and not self._cached_subscription:
+                 result["status_display"] = "Verificando..."
+
         return result
 
     def link_email(self, email: str, db_session) -> dict:
@@ -206,7 +256,7 @@ class SubscriptionManager:
             user = db_session.query(User).first()
             if user:
                 user.license_tier = data.get('tier', 'FREE')
-                user.license_key = email.lower().strip()  # Guardar email
+                user.email = email.lower().strip()  # Guardar email
                 user.hardware_id = self.hardware_id
                 user.last_license_check = datetime.now()
                 db_session.commit()
@@ -236,6 +286,7 @@ class SubscriptionManager:
         - FREE: 50 sesiones/mes
         - PRO: 100 sesiones/mes
         """
+        # Usamos get_subscription_status que ahora es rápido (local)
         status = self.get_subscription_status(db_session)
         tier = status['tier']
         
@@ -310,7 +361,7 @@ class LicenseManager(SubscriptionManager):
                     user = db_session.query(User).first()
                     if user:
                         user.license_tier = data.get('tier', 'FREE')
-                        user.license_key = license_key
+                        user.email = license_key
                         user.hardware_id = self.hardware_id
                         user.last_license_check = datetime.now()
                         db_session.commit()
@@ -322,6 +373,14 @@ class LicenseManager(SubscriptionManager):
                 return {"success": False, "message": f"Error: {str(e)}"}
 
 
-# Singleton
-license_manager = LicenseManager()
-subscription_manager = license_manager  # Alias
+# Singleton Lazy
+_license_manager_instance = None
+_license_manager_lock = threading.Lock()
+
+def get_license_manager():
+    global _license_manager_instance
+    if _license_manager_instance is None:
+        with _license_manager_lock:
+            if _license_manager_instance is None:
+                _license_manager_instance = LicenseManager()
+    return _license_manager_instance

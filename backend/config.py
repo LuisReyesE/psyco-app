@@ -45,3 +45,6 @@ DB_PATH = os.path.join(DATA_DIR, "psyco_app.db")
 # Create initial directories
 for d in [DATA_DIR, UPLOAD_DIR]:
     os.makedirs(d, exist_ok=True)
+
+# Development Flag (True if running from source, False if packaged)
+IS_DEV = not getattr(sys, 'frozen', False)

@@ -48,7 +48,7 @@ class User(Base):
 
     # Licensing System
     license_tier = Column(String, default="FREE")  # FREE | PRO
-    license_key = Column(String, nullable=True)    # PRO-XXXX-YYYY
+    email = Column(String, nullable=True)          # Account email for subscription
     hardware_id = Column(String, nullable=True)     # To prevent sharing
     last_license_check = Column(DateTime, nullable=True)
 
@@ -80,3 +80,17 @@ class Session(Base):
     partial_transcription = Column(Text, default="")  # For live UI updates
 
     patient = relationship("Patient", back_populates="sessions")
+
+# --- Event Listeners for Cleanup ---
+@event.listens_for(Session, "after_delete")
+def cleanup_session_files(mapper, connection, target):
+    """
+    Automatic cleanup: When a session row is deleted (directly or via cascade),
+    this function ensures the physical audio file is also removed from disk.
+    """
+    if target.audio_path and os.path.exists(target.audio_path):
+        try:
+            os.remove(target.audio_path)
+            print(f"[CLEANUP] Deleted audio file: {target.audio_path}")
+        except Exception as e:
+            print(f"[CLEANUP ERROR] Failed to delete file {target.audio_path}: {e}")

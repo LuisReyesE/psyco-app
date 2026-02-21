@@ -9,14 +9,18 @@ __pycache__/
 *.class
 *.so
 
+# =====================================
 # Virtual environments
+# =====================================
 venv/
 venv_clean/
 env/
 .venv/
 python_runtime/
 
+# =====================================
 # Environment variables (SENSITIVE)
+# =====================================
 .env
 .env.local
 .env.*.local
@@ -30,7 +34,9 @@ dist_electron/
 out/
 build/
 
+# =====================================
 # Package lock files (se regeneran con npm/pnpm/yarn install)
+# =====================================
 package-lock.json
 yarn.lock
 pnpm-lock.yaml
@@ -50,6 +56,8 @@ data/
 *.db-wal
 *.sqlite
 *.sqlite3
+*.sqlite3-journal
+*.sqlite-journal
 
 # Hardware/License identifiers (SENSITIVE)
 .hardware_id
@@ -59,6 +67,26 @@ data/
 # Uploads - SENSITIVE (audio files, encrypted data)
 # =====================================
 uploads/
+
+# =====================================
+# Tools
+# =====================================
+tools/
+
+# =====================================
+# Models
+# =====================================
+models/
+
+# =====================================
+# Subscription Web
+# =====================================
+subscription-web/
+
+# =====================================
+# Docs
+# =====================================
+docs/
 
 # =====================================
 # Logs
@@ -72,9 +100,9 @@ server.log.old
 # =====================================
 Session_AI.bat
 Session_AI.vbs
-check_db.py
-fix_db_migration.py
-migrate_db.py
+scripts/check_db.py
+scripts/fix_db_migration.py
+scripts/migrate_db.py
 
 # =====================================
 # IDEs and Editors
@@ -103,6 +131,42 @@ ehthumbs.db
 .agent/
 
 # =====================================
+# Media & Audio (Heavy/Sensitive)
+# =====================================
+*.mp3
+*.mp4
+*.wav
+*.m4a
+*.ogg
+*.flac
+*.opus
+*.webm
+*.aac
+
+# =====================================
+# Archives & Dumps (Heavy)
+# =====================================
+*.sql
+*.dump
+*.tar
+*.tar.gz
+*.rar
+
+# =====================================
+# Sensitive credentials & keys
+# =====================================
+*.pem
+*.key
+*.p12
+*.pfx
+credentials.json
+client_secret.json
+token.json
+secrets.yaml
+config.local.json
+auth.json
+
+# =====================================
 # Miscellaneous
 # =====================================
 *.bak
@@ -110,3 +174,5 @@ ehthumbs.db
 *.temp
 *.cache
 .cache/
+*.zip
+ backup_psyco_*.zip

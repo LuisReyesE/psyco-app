@@ -1,199 +1,97 @@
-# Session AI - Gestión Psicoterapéutica con IA Local
+# Session AI 🧠
 
-**Session AI** es una herramienta local diseñada para psicólogos que automatiza la transcripción de sesiones y la generación de notas de evolución clínica. Utiliza modelos de Inteligencia Artificial de vanguardia optimizados para funcionar de manera **100% privada y segura** en tu computadora personal.
+**Asistente Inteligente para Psicoterapia**
 
-## ✨ Características Principales
+Session AI es una aplicación de escritorio diseñada para optimizar el flujo de trabajo de los psicoterapeutas automatizando la documentación clínica mediante Inteligencia Artificial, garantizando la privacidad y seguridad de los datos.
 
-- **🔒 Privacidad Total:** Los audios y textos nunca salen de tu computadora. Cifrado de grado médico.
-- **🎙️ Transcripción Inteligente:** Usa `Faster-Whisper` para convertir voz a texto con alta precisión.
-- **📝 Notas Clínicas Automáticas:** Genera notas de evolución estructuradas usando modelos como `Gemma 3` vía Ollama.
-- **👥 Gestión de Pacientes:** Historial completo de sesiones por paciente con búsqueda rápida.
-- **🔐 Autenticación Segura:** Sistema de login con cifrado de datos sensibles.
-- **🎯 Multi-modelo:** Permite elegir entre diferentes modelos de IA instalados localmente.
-- **💾 Persistencia Local:** Base de datos SQLite con modo WAL para máximo rendimiento.
+---
 
-## 🔐 Seguridad y Privacidad
+## 🚀 Características Principales
 
-Session AI implementa múltiples capas de seguridad:
-- **Cifrado AES-256** para audios y transcripciones
-- **Derivación de claves PBKDF2** con 100,000 iteraciones
-- **Hashing bcrypt** para contraseñas
-- **Compresión automática** de audios para optimizar espacio
-- **Sin conexión a internet** para procesamiento de datos sensibles
+- **Grabación y Transcripción Segura**: Procesamiento de audio local y seguro.
+- **Análisis Clínico con IA**: Generación automática de notas SOAP, detección de estado de ánimo y riesgos.
+- **Gestión de Pacientes**: Expedientes clínicos organizados y accesibles.
+- **Modo Offline**: Funcionalidad core disponible sin conexión a internet.
+- **Privacidad Primero**: Encriptación de datos sensibles y anonimización automática.
 
-## 📂 Estructura del Proyecto
+---
+
+## 🛠️ Arquitectura del Proyecto
+
+El proyecto ha sido refactorizado (Feb 2026) hacia una arquitectura modular y escalable.
+
+### Estructura de Directorios
 
 ```
 psyco-app/
-├── assets/               # Recursos globales (Branding, Iconos)
-├── backend/              # Servidor API (FastAPI)
-│   ├── main.py          # Punto de entrada y rutas
-│   ├── processor.py     # Motor de IA y procesamiento
-│   └── ...
-├── frontend/            # Interfaz de usuario (HTML/JS/CSS)
-│   ├── assets/          # Imágenes y recursos del cliente
-│   └── ...
-├── data/                # ⚠️ DATOS SENSIBLES (Excluido de Git)
-├── ffmpeg-tools/        # Binarios de procesamiento de audio
-├── Session_AI.bat       # Lanzador automático profesional
-└── requirements.txt     # Dependencias de Python
+├── backend/                   # 🐍 Backend FastAPI Modular
+│   ├── routes/                # Endpoints (auth, patients, sessions, system)
+│   ├── services/              # Lógica de negocio (IA, procesamiento, anonimización)
+│   ├── models/                # Modelos de base de datos (SQLAlchemy)
+│   ├── main.py                # Inicialización de la app
+│   └── ...config y seguridad
+│
+├── frontend/                  # 💻 Frontend Electron/Web
+│   ├── js/
+│   │   ├── modules/           # Módulos ES6 (auth, patients, recording, etc.)
+│   │   ├── component/         # Componentes UI reutilizables
+│   │   ├── main.js            # Entry point principal
+│   │   └── api.js             # Cliente HTTP centralizado
+│   ├── css/                   # Estilos (TailwindCSS configurado)
+│   └── index.html             # Vista principal
+│
+├── scripts/                   # 🔧 Scripts de mantenimiento y base de datos
+├── data/                      # 🗄️ Almacenamiento local (SQLite, audios) - Ignorado por git
+└── main.js                    # ⚡ Proceso principal de Electron
 ```
 
-## 🚀 Instalación y Configuración
+---
 
-### 1. Requisitos Previos
+## ⚡ Instalación y Uso
 
-- **Python 3.9+** (recomendado 3.11)
-- **Ollama:** Debe estar instalado y corriendo
-  ```bash
-  # Instalar Ollama desde: https://ollama.ai
-  # Descargar un modelo (recomendado):
-  ollama pull gemma3:4b
-  ```
-- **FFmpeg:** Incluido en la carpeta `ffmpeg-tools` (Windows)
+### Prerrequisitos
 
-### 2. Configuración del Backend
+- **Node.js** (v18+)
+- **Python** (v3.10+)
+- **FFmpeg** (instalado y en el PATH)
 
-1. **Clonar el repositorio:**
+### Configuración
+
+1. **Instalar dependencias de Frontend:**
    ```bash
-   git clone <tu-repositorio>
-   cd psyco-app
+   pnpm install
    ```
 
-2. **Crear entorno virtual:**
-   ```powershell
-   python -m venv venv
-   .\venv\Scripts\activate  # Windows
-   # source venv/bin/activate  # Linux/Mac
-   ```
-
-3. **Instalar dependencias:**
-   ```powershell
+2. **Instalar dependencias de Backend:**
+   ```bash
    pip install -r requirements.txt
    ```
 
-### 3. Ejecución (Recomendada)
+3. **Configurar Variables de Entorno:**
+   Crea un archivo `.env` basado en `.env.example`:
+   ```env
+   SUPABASE_URL=tu_url
+   SUPABASE_KEY=tu_key
+   GEMINI_API_KEY=tu_api_key
+   ```
 
-Simplemente haz doble clic en el archivo **`Session_AI.bat`** en la raíz del proyecto. Este script automatiza la configuración del entorno, la instalación de dependencias y lanza la aplicación con un icono oficial en tu escritorio.
+### Ejecutar en Desarrollo
+
+```bash
+pnpm start
+```
+Esto iniciará tanto el proceso de Electron como el servidor backend de Python automáticamente.
 
 ---
 
-### 4. Ejecución (Manual para Desarrolladores)
+## 🔒 Seguridad
 
-1. **Iniciar el servidor:**
-   ```powershell
-   cd backend
-   python main.py
-   ```
-   El servidor estará disponible en `http://127.0.0.1:8000`
+- **Base de Datos**: SQLite encriptada en reposo.
+- **Autenticación**: Sistema de login local con tokens de sesión.
+- **Backups**: Sistema de exportación cifrada (.zip) para portabilidad.
 
-2. **Abrir la aplicación:**
-   - Abre `frontend/index.html` en tu navegador.
-   - En el primer uso, crea tu usuario y contraseña maestra.
-   - ⚠️ **Importante:** Guarda tu contraseña en un lugar seguro. Sin ella, no podrás acceder a los datos cifrados.
-
-### 5. Generar Instalador (Build)
-
-Para crear el ejecutable `.exe` distribuible:
-
-1. **Instalar dependencias de Node.js:**
-   ```powershell
-   npm install
-   ```
-
-2. **Ejecutar script de construcción:**
-   ```powershell
-   npm run dist
-   ```
-   Esto generará el instalador en la carpeta `dist_electron/`.
-
-## 🧠 Flujo de Trabajo
-
-1. **Registro inicial:** Crea tu cuenta de administrador local
-2. **Agregar paciente:** Registra un nuevo paciente en el sistema
-3. **Grabar/Subir sesión:** Graba en vivo o sube un archivo de audio
-4. **Procesamiento automático:**
-   - Transcripción con Faster-Whisper
-   - Análisis con modelo de Ollama
-   - Cifrado y compresión de datos
-5. **Revisar y editar:** Accede a las notas generadas y ajústalas según necesites
-
-## 📊 Tecnologías Utilizadas
-
-### Backend
-- **FastAPI** - Framework web moderno y rápido
-- **SQLAlchemy** - ORM para gestión de base de datos
-- **Faster-Whisper** - Transcripción de audio optimizada
-- **Ollama** - Modelos de lenguaje local
-- **Cryptography** - Cifrado de datos sensibles
-- **Passlib + Bcrypt** - Hashing seguro de contraseñas
-
-### Frontend
-- **Vanilla JavaScript** - Sin frameworks pesados
-- **Tailwind CSS** - Diseño moderno y responsivo
-- **HTML5 Audio API** - Grabación y reproducción
-
-### Base de Datos
-- **SQLite** con modo WAL - Máximo rendimiento y concurrencia
-
-## 🛠️ Desarrollo y Contribución
-
-### Arquitectura
-- **API REST:** Comunicación cliente-servidor vía HTTP
-- **Procesamiento asíncrono:** Cola de tareas en segundo plano
-- **Cifrado en RAM:** Las claves nunca se almacenan en disco
-
-### Comandos útiles
-```bash
-# Verificar estado del servidor
-curl http://127.0.0.1:8000/health
-
-# Ver documentación de la API
-# Abrir en navegador: http://127.0.0.1:8000/docs
-```
-
-## ⚠️ Consideraciones Importantes
-
-1. **Backup de datos:** La carpeta `/data` contiene toda tu información. Haz copias de seguridad regularmente.
-2. **Contraseña maestra:** No hay forma de recuperar datos si olvidas tu contraseña. Guárdala en un lugar seguro.
-3. **Requisitos de hardware:**
-   - Mínimo: 8GB RAM, CPU de 4 núcleos
-   - Recomendado: 16GB RAM, GPU NVIDIA (para transcripción más rápida)
-4. **Modelos de Ollama:** Cada modelo ocupa entre 2-8GB. Asegúrate de tener espacio suficiente.
-
-## 🐛 Solución de Problemas
-
-### El servidor no inicia
-- Verifica que el puerto 8000 no esté en uso
-- Asegúrate de estar en el entorno virtual activado
-
-### Error de "Module not found"
-```bash
-pip install -r requirements.txt --upgrade
-```
-
-### Ollama no responde
-```bash
-# Verificar que Ollama esté corriendo
-ollama list
-```
-
-### Base de datos bloqueada
-- El modo WAL está activado automáticamente
-- Si persiste, cierra todas las instancias del servidor
-
-## 🗺️ Hoja de Ruta (Roadmap)
-- [x] **Migración a Electron:** Aplicación de Escritorio nativa implementada (.exe).
-- [ ] **Notificaciones Nativas:** Alertas de Windows al finalizar el procesamiento.
-- [ ] **Modo Multilingüe:** Soporte para transcripción en más idiomas.
+---
 
 ## 📄 Licencia
-Este proyecto es de código privado. Todos los derechos reservados.
 
-## 👨‍💻 Desarrollado por
-
-**ALCHEMY LAB** - Soluciones de IA para profesionales de la salud
-
----
-
-*Session AI - Privacidad y eficiencia en la práctica clínica psicológica*
+Propiedad de **Alchemy Lab**. Todos los derechos reservados.

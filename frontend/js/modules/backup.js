@@ -1,18 +1,16 @@
+/**
+ * Backup Module
+ * Export and restore system data
+ */
 
-// ------------------------------------
-// SETTINGS & BACKUP SYSTEM
-// ------------------------------------
+import { AppState } from '../state.js';
+import { API_URL } from '../api.js';
 
-function openSettingsModal() {
-    document.getElementById('settings-modal').classList.remove('hidden');
-}
-
-function closeSettingsModal() {
-    document.getElementById('settings-modal').classList.add('hidden');
-}
-
-async function downloadBackup() {
-    if (!authToken) return;
+/**
+ * Download a full backup ZIP of the system
+ */
+export async function downloadBackup() {
+    if (!AppState.authToken) return;
 
     try {
         const btn = document.querySelector('#settings-modal button[onclick="downloadBackup()"]');
@@ -20,10 +18,9 @@ async function downloadBackup() {
         btn.innerHTML = `<span class="animate-pulse">Empaquetando...</span>`;
         btn.disabled = true;
 
-        const response = await fetch(`${API_URL}/system/backup?token=${encodeURIComponent(authToken)}`);
+        const response = await fetch(`${API_URL}/system/backup?token=${encodeURIComponent(AppState.authToken)}`);
 
         if (response.ok) {
-            // Initiate Download
             const blob = await response.blob();
             const url = window.URL.createObjectURL(blob);
             const a = document.createElement('a');
@@ -51,20 +48,23 @@ async function downloadBackup() {
     }
 }
 
-async function handleRestoreSelect(input) {
+/**
+ * Handle restore file selection
+ * @param {HTMLInputElement} input 
+ */
+export async function handleRestoreSelect(input) {
     const file = input.files[0];
     if (!file) return;
 
     if (!confirm("⚠️ ¡ADVERTENCIA CRÍTICA! ⚠️\n\nAl restaurar esta copia, se borrarán TODOS los datos actuales (pacientes, sesiones, análisis) y serán reemplazados por los de la copia.\n\n¿Estás seguro de que quieres continuar? Esta acción es IRREVERSIBLE.")) {
-        input.value = ''; // Reset input
+        input.value = '';
         return;
     }
 
     const formData = new FormData();
     formData.append('file', file);
-    formData.append('token', authToken);
+    formData.append('token', AppState.authToken);
 
-    // Bloquear UI
     const modal = document.getElementById('settings-modal').querySelector('.custom-card');
     const originalContent = modal.innerHTML;
     modal.innerHTML = `
@@ -93,7 +93,7 @@ async function handleRestoreSelect(input) {
     } catch (e) {
         console.error("Restore failed", e);
         alert(`❌ Error crítico al restaurar: ${e.message}\n\nEl sistema no ha sido modificado.`);
-        modal.innerHTML = originalContent; // Restore UI
+        modal.innerHTML = originalContent;
         input.value = '';
     }
 }
